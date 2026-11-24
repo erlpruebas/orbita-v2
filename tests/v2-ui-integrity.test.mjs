@@ -85,7 +85,20 @@ test('el teclado Custom reproduce el zigzag del chasis y la PWA usa la caché ac
     .map(file => readFile(new URL(file, root), 'utf8')));
   assert.match(css, /html, body\s*\{[^}]*height:\s*100dvh;[^}]*overflow:\s*clip/);
   assert.match(tokens, /--chassis-bg:\s*#141518;/);
-  assert.match(serviceWorker, /const CACHE_NAME = 'orbita-v2-hw-v3';/);
+  assert.match(serviceWorker, /const CACHE_NAME = 'orbita-v2-hw-v4';/);
+});
+
+test('el looper tiene cuatro botones de 32 px y un selector de audio oculto', async () => {
+  const controls = html.match(/<div class="looper-controls">([\s\S]*?)<\/div>/)[1];
+  assert.deepEqual([...controls.matchAll(/<button[^>]*id="([^"]+)"/g)].map(([, id]) => id), [
+    'btn-looper-rec', 'btn-looper-play', 'btn-looper-load', 'btn-looper-clear'
+  ]);
+  assert.match(controls, /id="btn-looper-load"[^>]*>[\s\S]*?id="looper-load-led"[\s\S]*?href="#icon-folder"/);
+  assert.match(html, /<input type="file" id="looper-audio-file-input" accept="audio\/\*,\.mp3,\.wav,\.m4a,\.ogg" hidden\s*\/>/);
+  const css = await readFile(new URL('css/layout.css', root), 'utf8');
+  assert.match(css, /\.looper-controls\s*\{[^}]*grid-template-columns:\s*repeat\(4, 1fr\);[^}]*height:\s*32px/);
+  assert.equal(t('deck.trackLoadedTempo', 'es', { bpm: 120 }), 'Pista cargada · BPM 120');
+  assert.equal(t('deck.trackLoadedTempo', 'en', { bpm: 120 }), 'Track loaded · 120 BPM');
 });
 
 test('el estudio muestra el filtro, la onda interactiva y los cuatro estilos de vídeo', async () => {
@@ -99,6 +112,19 @@ test('el estudio muestra el filtro, la onda interactiva y los cuatro estilos de 
   const css = await readFile(new URL('css/modals.css', root), 'utf8');
   assert.match(css, /\.studio-fx-grid\s*\{[^}]*grid-template-columns:\s*repeat\(3, 1fr\)/);
   assert.match(css, /\.demo-waveform-canvas\s*\{[^}]*cursor:\s*pointer;[^}]*touch-action:\s*none/);
+});
+
+test('la pista cargada tiene faders de 0 a 150% en CONFIG y en el mezclador de maqueta', async () => {
+  const config = html.slice(html.indexOf('id="config-settings"'), html.indexOf('id="modal-sessions"'));
+  const studio = html.slice(html.indexOf('class="studio-mixer-box"'));
+  assert.match(config, /id="config-backing-vol" min="0" max="150" value="90"[^>]*>\s*<span id="config-backing-vol-val"/);
+  assert.match(studio, /id="mix-backing-row" hidden>\s*<span[^>]+data-i18n="studio.backing"[^>]*>BASE<\/span>\s*<input[^>]+id="mix-backing-vol" min="0" max="150" value="90"[^>]*>\s*<span id="mix-backing-val"/);
+  assert.equal(t('studio.backing', 'es'), 'BASE');
+  assert.equal(t('studio.backing', 'en'), 'TRACK');
+  const [css, ui] = await Promise.all(['css/modals.css', 'js/ui-modals.js']
+    .map(file => readFile(new URL(file, root), 'utf8')));
+  assert.match(css, /\.mixer-row\[hidden\]\s*\{\s*display:\s*none/);
+  assert.match(ui, /getElementById\('mix-backing-row'\)\.hidden\s*=\s*!session\.hasBackingTrack/);
 });
 
 test('la captura de maqueta abre el micro crudo y aplica un pasaaltos fijo de 40 Hz', async () => {

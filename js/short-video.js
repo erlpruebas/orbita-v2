@@ -1,6 +1,7 @@
 /** Captura frontal sin audio y exportación vertical con la mezcla de la maqueta. */
 
 import { ensureAudioUnlocked } from './audio-core.js';
+import { getState } from './state.js';
 import { getNoteNameTitle } from './theory.js';
 
 export const VIDEO_STYLES = Object.freeze(['pure', 'keys', 'orbit', 'cosmos']);
@@ -525,6 +526,7 @@ function makeFrameRenderer(ctx, video, analyser, sampleRate, meta) {
 }
 
 export async function encodeShortVideo(mix, cameraBlob, onProgress, signal, meta = {}) {
+  const bpm = meta.bpm ?? getState().bpm;
   const { audio, trimStart, trimmedDur } = mix;
   const canvas = document.createElement('canvas');
   canvas.width = FRAME_WIDTH;
@@ -614,7 +616,7 @@ export async function encodeShortVideo(mix, cameraBlob, onProgress, signal, meta
     if (!blob.size) throw new Error('Empty short video');
     onProgress(100);
     const extension = blob.type.startsWith('video/mp4') ? 'mp4' : 'webm';
-    return { blob, mimeType: `video/${extension}`, filename: `orbita-maqueta-9x16.${extension}` };
+    return { blob, mimeType: `video/${extension}`, filename: `orbita-maqueta-T${bpm}-9x16.${extension}` };
   } finally {
     signal.removeEventListener('abort', stop);
     stop();

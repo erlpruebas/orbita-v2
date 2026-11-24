@@ -668,6 +668,10 @@
   pointer-events: none;
 }
 
+.mixer-row[hidden] {
+  display: none;
+}
+
 .studio-mixer-box {
   background: var(--recess-bg);
   border: 1px solid var(--recess-border);
@@ -689,6 +693,15 @@
 
 .mixer-label.is-voice {
   color: var(--led-amber-bright);
+}
+
+.mixer-label.is-backing {
+  color: var(--led-cyan-bright);
+}
+
+#mix-backing-vol,
+#config-backing-vol {
+  accent-color: var(--led-violet-bright);
 }
 
 .mixer-label.is-sync {
@@ -814,6 +827,19 @@
 
 #config-settings,
 .sessions-list-container { gap: 8px; }
+
+.config-backing-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(60px, 1fr) 4ch;
+  align-items: center;
+  gap: 8px;
+}
+
+.config-backing-row input[type="range"] {
+  width: 100%;
+  min-width: 0;
+  cursor: pointer;
+}
 
 .settings-block,
 .session-item {

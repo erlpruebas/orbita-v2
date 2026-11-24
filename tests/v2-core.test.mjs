@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
+import { runInNewContext } from 'node:vm';
 import {
   CUSTOM_SCALE_PRESETS,
   INTERVAL_ROMANS,
@@ -17,19 +19,26 @@ import {
 import { detectSystemLang, INTERVAL_LABELS, resolveLang, SHORT_INTERVAL_LABELS, t } from '../js/i18n.js';
 import { POPULAR_PROGRESSIONS, selectProgression, setProgressionVisualCallback } from '../js/progressions.js';
 import { getState, setState } from '../js/state.js';
-import { getDrumDestination, getMasterOutputNode } from '../js/audio-core.js';
+import { getBackingTrackDestination, getDrumDestination, getMasterOutputNode, setBackingTrackVolume } from '../js/audio-core.js';
 import {
   buildFilteredVoiceSamples, getVoiceFilterPreset, getCurrentPreviewPositionSec, getStudioVoicePeaks,
   cancelDemoCountIn, isDemoCountIn, isDemoRecording, isDemoRecordingOrCountIn,
-  renderFinalMixBuffer, startDemoPreviewPlayback, stopDemoPreviewPlayback, startDemoRecording, stopDemoRecording
+  renderFinalMixBuffer, renderFinalMixWav, startDemoPreviewPlayback, stopDemoPreviewPlayback,
+  startDemoRecording, stopDemoRecording, updateLivePreviewMix
 } from '../js/demo-recorder.js';
-import { VIDEO_STYLES } from '../js/short-video.js';
+import { encodeShortVideo, VIDEO_STYLES } from '../js/short-video.js';
 import { startHumanizedVoiceGroup } from '../js/synth-presets.js';
 import { initKeyboardUI } from '../js/ui-keyboard.js';
 import {
   exportLooperSnapshot,
+  extractTempoFromFilename,
   getDebugTelemetry,
+  getLoadedBackingTrackBuffer,
+  hasLoadedBackingTrack,
   importLooperSnapshot,
+  loadLooperAudioBuffer,
+  loadLooperAudioFile,
+  pressLooperClear,
   pressLooperPlayStop,
   pressLooperRec,
   stopAllTransportForPlayback,
@@ -223,10 +232,10 @@ test('hay 16 progresiones únicas con grados del 0 al 6 y selección circular', 
 
 test('el filtro de voz tiene cuatro presets independientes de la captura', () => {
   const expected = [
-    { highpassHz: 40, deMudDb: 0, presenceDb: 0, lowpassHz: 20000, gateThreshold: 0, gateFloor: 1, musicDuckAmt: 0 },
-    { highpassHz: 95, deMudDb: -2, presenceDb: 1.2, lowpassHz: 15000, gateThreshold: 0.008, gateFloor: 0.45, musicDuckAmt: 0.25 },
-    { highpassHz: 130, deMudDb: -3.5, presenceDb: 2.5, lowpassHz: 12000, gateThreshold: 0.015, gateFloor: 0.2, musicDuckAmt: 0.55 },
-    { highpassHz: 165, deMudDb: -5, presenceDb: 3.5, lowpassHz: 9500, gateThreshold: 0.024, gateFloor: 0.06, musicDuckAmt: 0.85 }
+    { bleedCancel: 0, gateStrength: 0, gateFloor: 1, highpassHz: 40, deMudDb: 0, presenceDb: 0, lowpassHz: 20000 },
+    { bleedCancel: 0.40, gateStrength: 0.35, gateFloor: 0.32, highpassHz: 105, deMudDb: -3, presenceDb: 2, lowpassHz: 14000 },
+    { bleedCancel: 0.72, gateStrength: 0.65, gateFloor: 0.08, highpassHz: 155, deMudDb: -5, presenceDb: 3.5, lowpassHz: 10500 },
+    { bleedCancel: 1, gateStrength: 0.95, gateFloor: 0.01, highpassHz: 205, deMudDb: -6.5, presenceDb: 5, lowpassHz: 8200 }
   ];
   for (const [level, preset] of expected.entries()) assert.deepEqual(getVoiceFilterPreset(level), preset);
   getVoiceFilterPreset(0).highpassHz = 80;
@@ -259,8 +268,109 @@ test('la puerta conserva los bits del nivel 0 y atenúa el sangrado alineado ent
   assert.ok(peak(filtered, 1.8, 2) < peak(original, 1.8, 2) * 0.1);
 });
 
+test('el filtro atenúa al menos 12 dB de sangrado fuerte y de ruido, y conserva la voz sobre la música', () => {
+  const rate = 48000;
+  const tone = (i, hz) => Math.sin(i * 2 * Math.PI * hz / rate);
+  const window = (samples, start, end) => samples.subarray(start * rate, end * rate);
+  const rms = samples => Math.sqrt(samples.reduce((power, s) => power + s * s, 0) / samples.length);
+  const db = (output, input) => 20 * Math.log10(rms(output) / rms(input));
+  let seed = 314159;
+  const noise = () => ((seed = (Math.imul(1664525, seed) + 1013904223) >>> 0) / 0x100000000) * 2 - 1;
+  const music = Float32Array.from({ length: rate * 4 }, (_, i) => i < rate * 2.5
+    ? 0.22 * noise() + 0.10 * tone(i, 310) + 0.08 * tone(i, 712)
+    : 0);
+  // Camino directo entre taps de la rejilla, más una reflexión secundaria.
+  const latency = Math.round(0.075 * rate);
+  const bleed = music.map((_, i) => (music[i - latency - 239] ?? 0)
+    + 0.28 * (music[i - latency - Math.round(0.009 * rate)] ?? 0));
+  const bleedGain = 0.12 / rms(window(bleed, 0.4, 1));
+  const vocal = music.map((_, i) => i >= rate * 1.25 && i < rate * 2.15
+    ? 0.32 * tone(i, 231) + 0.13 * tone(i, 462)
+    : 0);
+  const raw = bleed.map((s, i) => s * bleedGain + vocal[i] + 0.012 * noise());
+  const mild = buildFilteredVoiceSamples(raw, music, rate, 1, -75);
+  const medium = buildFilteredVoiceSamples(raw, music, rate, 2, -75);
+  const filtered = buildFilteredVoiceSamples(raw, music, rate, 3, -75);
+  const instrumental = samples => window(samples, 0.4, 1);
+  const room = samples => window(samples, 3.2, 4);
+  const sung = samples => window(samples, 1.5, 2);
+
+  assert.ok(db(instrumental(filtered), instrumental(raw)) <= -12, 'sangrado en la pausa instrumental');
+  assert.ok(db(room(filtered), room(raw)) <= -12, 'ruido de sala sin pista');
+  assert.ok(rms(instrumental(mild)) < rms(instrumental(raw)));
+  assert.ok(rms(instrumental(medium)) < rms(instrumental(mild)));
+  assert.ok(rms(instrumental(filtered)) < rms(instrumental(medium)));
+  const sungVocal = sung(vocal);
+  const vocalPower = sungVocal.reduce((power, s) => power + s * s, 0);
+  const projection = sung(filtered).reduce((power, s, i) => power + s * sungVocal[i], 0) / vocalPower;
+  assert.ok(projection > 0.97 && projection < 1.03, `ganancia vocal: ${projection}`);
+  const residual = samples => sung(samples).map((s, i) => s - sungVocal[i]);
+  assert.ok(db(residual(filtered), residual(raw)) <= -10, 'cancelación mientras la puerta está abierta');
+});
+
+test('el AudioWorklet transfiere tres canales cada 4096 muestras y vacía hasta el fotograma de Stop', async () => {
+  const recorder = await readFile(new URL('../js/demo-recorder.js', import.meta.url), 'utf8');
+  const code = recorder.match(/const MULTITRACK_WORKLET_CODE = `([\s\S]*?)`;/)[1];
+  const messages = [];
+  let processor;
+  const scope = {
+    currentFrame: 0,
+    AudioWorkletProcessor: class {
+      port = {
+        postMessage(message, transfer = []) {
+          messages.push(structuredClone(message, { transfer }));
+          if (transfer.length) assert.equal(transfer[0].byteLength, 0);
+        }
+      };
+    },
+    registerProcessor(name, Type) {
+      assert.equal(name, 'orbita-multitrack-recorder');
+      processor = new Type();
+    }
+  };
+  runInNewContext(code, scope);
+  const quantum = Array.from({ length: 3 }, (_, channel) => new Float32Array(128).fill(channel + 1));
+  processor.port.onmessage({ data: { type: 'start', frame: 132 } });
+  for (let i = 0; i < 33; i++) {
+    scope.currentFrame = i * 128;
+    assert.equal(processor.process([quantum]), true);
+  }
+  assert.equal(messages.length, 0);
+  scope.currentFrame += 128;
+  processor.process([quantum]);
+  assert.equal(messages.length, 1);
+  const full = messages[0];
+  assert.equal(full.frame, 132);
+  assert.equal(full.length, 4096);
+  assert.equal(full.mL.buffer.byteLength, 3 * 4096 * Float32Array.BYTES_PER_ELEMENT);
+  for (const [i, channel] of [full.mL, full.mR, full.vM].entries()) {
+    assert.equal(channel.buffer, full.mL.buffer);
+    assert.ok(channel.every(sample => sample === i + 1));
+  }
+  const endFrame = scope.currentFrame + 140;
+  processor.port.onmessage({ data: { type: 'flush', frame: endFrame } });
+  assert.equal(messages.length, 1);
+  scope.currentFrame += 128;
+  assert.equal(processor.process([quantum]), false);
+  const [, partial, ack] = messages;
+  assert.equal(partial.frame, full.frame + full.length);
+  assert.equal(partial.length, endFrame - partial.frame);
+  assert.ok(partial.vM.subarray(0, partial.length).every(sample => sample === 3));
+  assert.equal(ack.type, 'flushed');
+});
+
 test('el vídeo corto ofrece cuatro estilos en orden de intensidad', () => {
   assert.deepEqual(VIDEO_STYLES, ['pure', 'keys', 'orbit', 'cosmos']);
+});
+
+test('el tempo del nombre de archivo exige una etiqueta T y un BPM entre 40 y 220', () => {
+  for (const [filename, bpm] of [
+    ['orbita-maqueta-T120-20261124.mp3', 120], ['tema_t92.wav', 92], ['T140.mp3', 140],
+    ['demo T88.mp3', 88], ['T40.wav', 40], ['tema-T220.ogg', 220]
+  ]) assert.equal(extractTempoFromFilename(filename), bpm, filename);
+  for (const filename of ['BEAT120.mp3', 'tema-T999.mp3', 'tema-T20.mp3', 'sin-tempo.mp3', 'T1200.mp3']) {
+    assert.equal(extractTempoFromFilename(filename), null, filename);
+  }
 });
 
 test('el estado inicial arranca seco y guarda preferencias, excluyendo la reproducción activa', async context => {
@@ -275,17 +385,21 @@ test('el estado inicial arranca seco y guarda preferencias, excluyendo la reprod
   assert.equal(defaults.notation, 'solfege');
   assert.equal(defaults.reverbLevel, 0);
   assert.equal(defaults.micFilterLevel, 0);
+  assert.equal(defaults.backingTrackVol, 0.90);
   assert.equal(defaults.cameraEnabled, false);
   assert.equal(defaults.progressionIndex, -1);
   assert.equal(defaults.progressionPlaying, false);
   assert.equal(defaults.tutorialDone, false);
+  const emptyTrack = { loadedTrackName: '', loadedTrackDuration: 0, backingTrackPlaying: false };
+  for (const [key, value] of Object.entries(emptyTrack)) assert.equal(defaults[key], value);
 
   const preferences = {
     scaleMode: 'custom', customScale: andalusian.degrees, customPresetId: 'andalusian',
     lang: 'en', notation: 'letter', micFilterLevel: 3, cameraEnabled: true,
-    progressionIndex: 15, tutorialDone: true
+    progressionIndex: 15, tutorialDone: true, backingTrackVol: 1.25
   };
-  initial.setState({ ...preferences, progressionPlaying: true, reverbLevel: 3 });
+  initial.setState({ ...preferences, progressionPlaying: true, reverbLevel: 3,
+    loadedTrackName: 'maqueta.mp3', loadedTrackDuration: 34, backingTrackPlaying: true });
   const stored = JSON.parse(storage.getItem('orbita_v2_config_v1'));
   assert.equal(Object.hasOwn(stored, 'progressionPlaying'), false);
   assert.equal(Object.hasOwn(stored, 'reverbLevel'), false);
@@ -293,6 +407,10 @@ test('el estado inicial arranca seco y guarda preferencias, excluyendo la reprod
   for (const [key, value] of Object.entries(preferences)) assert.deepEqual(restored[key], value);
   assert.equal(restored.progressionPlaying, false);
   assert.equal(restored.reverbLevel, 0);
+  for (const [key, value] of Object.entries(emptyTrack)) {
+    assert.equal(Object.hasOwn(stored, key), false);
+    assert.equal(restored[key], value);
+  }
   initial.setState({ progressionIndex: -1 });
   assert.equal((await import('../js/state.js?config-no-progression')).getState().progressionIndex, -1);
 });
@@ -309,7 +427,7 @@ function resetMusicAfter(context) {
   const original = { ...getState() };
   context.after(() => {
     stopAllTransportForPlayback();
-    importLooperSnapshot(null);
+    pressLooperClear();
     setState(original);
   });
 }
@@ -406,11 +524,12 @@ class TestAudioParam {
   setTargetAtTime(value, time) { this.targets.push({ value, time }); }
 }
 
-class TestAudioNode {
+class TestAudioNode extends EventTarget {
   connections = [];
   stopTimes = [];
 
   constructor(kind, paramNames = []) {
+    super();
     this.kind = kind;
     for (const name of paramNames) this[name] = new TestAudioParam();
   }
@@ -483,6 +602,15 @@ test('la progresión mantiene sus tríadas en octava 0 al cambiar a Melodía en 
       createChannelSplitter() { return this.addNode('splitter'); }
       createDelay() { return this.addNode('delay', ['delayTime']); }
       createMediaStreamSource() { return this.addNode('mic'); }
+      createAnalyser() {
+        return Object.assign(this.addNode('analyser'), { frequencyBinCount: 2048, getFloatTimeDomainData() {} });
+      }
+      createMediaStreamDestination() {
+        const track = { stop() {} };
+        return Object.assign(this.addNode('stream'), {
+          stream: { getTracks: () => [track], getAudioTracks: () => [track] }
+        });
+      }
     }
   });
   let schedulerTick;
@@ -778,7 +906,17 @@ test('la progresión mantiene sus tríadas en octava 0 al cambiar a Melodía en 
       audio.audioWorklet = { async addModule() {} };
       let worklet;
       replaceGlobal(studio, 'AudioWorkletNode', class extends TestAudioNode {
-        port = {};
+        port = {
+          postMessage: command => {
+            if (command.type === 'flush') queueMicrotask(() => {
+              assert.ok(this.port.onmessage, 'el puerto sigue conectado mientras entrega la cola');
+              const tail = new Float32Array(24).fill(1);
+              tail.fill(0.005, 0, 17);
+              this.port.onmessage({ data: { frame: command.frame - 17, mL: tail, mR: tail, vM: tail } });
+              this.port.onmessage({ data: { type: 'flushed' } });
+            });
+          }
+        };
         constructor() { super('worklet'); worklet = this; }
       });
 
@@ -799,8 +937,8 @@ test('la progresión mantiene sus tríadas en octava 0 al cambiar a Melodía en 
       const startFrame = Math.ceil(startAt * audio.sampleRate);
       const precount = new Float32Array(128).fill(1);
       worklet.port.onmessage({ data: { frame: startFrame - 128, mL: precount, mR: precount, vM: precount } });
-      const overlapping = new Float32Array(4 + captured.length).fill(1);
-      overlapping.set(captured, 4);
+      const overlapping = new Float32Array(4 + captured.length - 17).fill(1);
+      overlapping.set(captured.subarray(0, captured.length - 17), 4);
       worklet.port.onmessage({ data: { frame: startFrame - 4, mL: overlapping, mR: overlapping, vM: overlapping } });
       startHumanizedVoiceGroup([69, 72, 76], {
         when: startAt + 0.125, duration: 0.5, velocity: 0.8, humanize: 3, strumDirection: 'down'
@@ -810,6 +948,9 @@ test('la progresión mantiene sus tríadas en octava 0 al cambiar a Melodía en 
       advanceAudioTo(startAt + 2);
       const session = await stopDemoRecording();
       assert.ok(micStopped);
+      assert.equal(session.hasBackingTrack, false);
+      assert.equal(session.backingBuffer, null);
+      assert.equal(worklet.port.onmessage, null);
       assert.deepEqual(session.noteEvents, [{
         timeSec: 0.125, notes: [76, 72, 69], pitchClasses: [4, 0, 9],
         rootPc: 9, label: 'Lam', degreeIndex: 0, durationSec: 0.5, velocity: 0.8
@@ -827,7 +968,13 @@ test('la progresión mantiene sus tríadas en octava 0 al cambiar a Melodía en 
       assert.equal(voice.offset, 0.725);
       assert.equal(voice.startTime, music.startTime);
       assert.notEqual(voice.buffer, session.voiceBuffer);
-      assert.ok(audio.nodes.some(node => node.type === 'highpass' && node.frequency.value === 165));
+      const highpasses = audio.nodes.filter(node => node.type === 'highpass' && node.frequency.value === 205);
+      assert.equal(highpasses.length, 2);
+      assert.equal(highpasses[0].connections[0], highpasses[1]);
+      assert.equal(highpasses[1].connections[0].frequency.value, 250);
+      assert.equal(highpasses[1].connections[0].connections[0].frequency.value, 3300);
+      updateLivePreviewMix({ ...settings, voiceFilter: 2 });
+      assert.ok(highpasses.every(node => node.frequency.targets.at(-1).value === 155));
       audio.currentTime = music.startTime + 0.25;
       assert.equal(getCurrentPreviewPositionSec(), 0.85);
 
@@ -835,6 +982,9 @@ test('la progresión mantiene sus tríadas en octava 0 al cambiar a Melodía en 
       const [lastMusic, lastVoice] = audio.nodes.filter(node => node.kind === 'bufferSource').slice(-2);
       assert.equal(lastMusic.offset, settings.trimEndSec - 0.05);
       assert.equal(lastVoice.buffer, session.voiceBuffer);
+      const [bypassEQ, bypassDirect] = lastVoice.connections[0].connections;
+      assert.equal(bypassEQ.type, 'highpass');
+      assert.equal(bypassDirect.gain.value, 1);
       assert.equal(ended, 0);
       stopDemoPreviewPlayback();
       assert.equal(getCurrentPreviewPositionSec(), null);
@@ -851,12 +1001,241 @@ test('la progresión mantiene sus tríadas en octava 0 al cambiar a Melodía en 
         }
         async startRendering() { return this.rendered; }
       };
-      await renderFinalMixBuffer(settings);
+      const mix = await renderFinalMixBuffer(settings);
       const [exportMusic, exportVoice] = offline.nodes.filter(node => node.kind === 'bufferSource');
       assert.equal(exportMusic.offset, 0.4);
       assert.equal(exportVoice.offset, 0.525);
       assert.equal(exportVoice.buffer, voice.buffer);
       assert.deepEqual(session.voiceBuffer.getChannelData(0), captured);
+
+      setState({ bpm: 126 });
+      assert.match((await renderFinalMixWav(settings)).filename, /^orbita-maqueta-T126-\d{8}-\d{4}\.wav$/);
+      window.lamejs = { Mp3Encoder: class {
+        encodeBuffer() { return Int8Array.of(1); }
+        flush() { return new Int8Array(); }
+      } };
+      try {
+        assert.match((await renderFinalMixWav(settings)).filename, /^orbita-maqueta-T126-\d{8}-\d{4}\.mp3$/);
+      } finally {
+        delete window.lamejs;
+      }
+
+      const drawing = {
+        createLinearGradient: () => ({ addColorStop() {} }),
+        beginPath() {}, roundRect() {}, fill() {}, fillRect() {}, fillText() {},
+        moveTo() {}, lineTo() {}, stroke() {}
+      };
+      globalThis.document.createElement = () => ({
+        getContext: () => drawing,
+        captureStream: () => ({ addTrack() {}, getTracks: () => [] })
+      });
+      replaceGlobal(studio, 'MediaRecorder', class extends EventTarget {
+        mimeType = 'video/webm';
+        start() { this.state = 'recording'; }
+        stop() {
+          this.state = 'inactive';
+          this.dispatchEvent(Object.assign(new Event('dataavailable'), { data: new Blob(['video']) }));
+          this.dispatchEvent(new Event('stop'));
+        }
+      });
+      studio.mock.method(audio, 'createBufferSource', () => {
+        const source = audio.addNode('bufferSource');
+        source.start = () => queueMicrotask(() => source.dispatchEvent(new Event('ended')));
+        return source;
+      });
+      const signal = new AbortController().signal;
+      const video = await encodeShortVideo(mix, null, () => {}, signal, session.videoMetadata);
+      assert.equal(video.filename, `orbita-maqueta-T${session.videoMetadata.bpm}-9x16.webm`);
+      const videoWithoutMetadata = await encodeShortVideo(mix, null, () => {}, signal);
+      assert.equal(videoWithoutMetadata.filename, 'orbita-maqueta-T126-9x16.webm');
+    });
+
+    await context.test('la pista seca reproduce desde cero y se rearma en el tiempo 1 de la maqueta', async studio => {
+      const advanceAudioTo = mockAudioTimeouts(studio, audio);
+      const progress = { style: {}, classList: { toggle() {} } };
+      replaceGlobal(studio, 'document', { getElementById: id => id === 'loop-progress-fill' ? progress : null });
+      let frame;
+      replaceGlobal(studio, 'requestAnimationFrame', callback => { frame = callback; return 1; });
+      replaceGlobal(studio, 'cancelAnimationFrame', () => { frame = null; });
+      const trackSources = buffer => audio.nodes.filter(node => node.kind === 'bufferSource' && node.buffer === buffer);
+      const buffer = audio.createBuffer(2, audio.sampleRate * 8);
+      buffer.getChannelData(1).fill(0.25);
+      pressLooperClear();
+      setState({ bpm: 92, metronomeEnabled: false, cameraEnabled: false });
+      const filename = 'mi-tema-T128.mp3';
+      assert.deepEqual(loadLooperAudioBuffer(buffer, filename), { ok: true, name: filename, duration: 8, detectedBpm: 128 });
+      assert.equal(getState().bpm, 128);
+      assert.equal(getState().loadedTrackName, filename);
+      assert.equal(getState().loadedTrackDuration, 8);
+      assert.equal(hasLoadedBackingTrack(), true);
+      assert.equal(getLoadedBackingTrackBuffer(), buffer);
+
+      const dryBus = getBackingTrackDestination();
+      assert.equal(dryBus.gain.value, 0.90);
+      assert.deepEqual(dryBus.connections, [audio.destination]);
+      assert.notEqual(dryBus.connections[0], getMasterOutputNode());
+      setBackingTrackVolume(2);
+      assert.equal(dryBus.gain.targets.at(-1).value, 1.5);
+      assert.equal(getState().backingTrackVol, 1.5);
+      setBackingTrackVolume(0.65);
+      assert.equal(dryBus.gain.targets.at(-1).value, 0.65);
+      const beforePlay = oscillators().length;
+      const playAt = audio.currentTime + 0.01;
+      pressLooperPlayStop();
+      const [firstPlay] = trackSources(buffer);
+      assert.equal(firstPlay.startTime, playAt);
+      assert.equal(firstPlay.offset, 0);
+      assert.deepEqual(firstPlay.connections, [dryBus]);
+      assert.equal(getState().backingTrackPlaying, true);
+      assert.equal(getDebugTelemetry().running, false);
+      advanceAudioTo(playAt + 2);
+      frame();
+      assert.equal(progress.style.width, '25.0%');
+      assert.equal(oscillators().length, beforePlay);
+      advanceAudioTo(playAt + 8);
+      firstPlay.onended();
+      assert.equal(getState().backingTrackPlaying, false);
+      assert.equal(getDebugTelemetry().running, false);
+      assert.equal(frame, null);
+      assert.equal(progress.style.width, '0.0%');
+
+      pressLooperPlayStop();
+      const metronomeAt = trackSources(buffer).at(-1).startTime;
+      setState({ metronomeEnabled: true });
+      const [optionalClick] = atTime(oscillators(), metronomeAt);
+      assert.equal(optionalClick.frequency.value, 1320);
+      assert.equal(getDebugTelemetry().running, false);
+      setState({ metronomeEnabled: false });
+      assert.equal(optionalClick.stopTimes.at(-1), audio.currentTime);
+      assert.equal(schedulerTick, null);
+      pressLooperPlayStop();
+      advanceAudioTo(audio.currentTime + 1);
+
+      const loop = loopAt120();
+      loop.events = [{ ...loop.events[0], offsetSec: 0, notes: [79], presetId: 3, humanize: 0 }];
+      importLooperSnapshot(loop);
+      toggleDrumPlayback();
+      const bothAt = audio.currentTime + 0.01;
+      pressLooperPlayStop();
+      assert.equal(trackSources(buffer).at(-1).startTime, bothAt);
+      assert.deepEqual(pitches(atTime(oscillators(), bothAt)), [midiToFreq(79)]);
+      pressLooperPlayStop();
+      assert.equal(getState().looperState, 'idle');
+      assert.equal(getState().backingTrackPlaying, false);
+      toggleDrumPlayback();
+      importLooperSnapshot(null);
+      assert.equal(hasLoadedBackingTrack(), true);
+
+      pressLooperPlayStop();
+      const preCountSource = trackSources(buffer).at(-1);
+      const beforeCount = oscillators().length;
+      const t0 = audio.currentTime + 0.04;
+      const downbeat = t0 + 4 * (60 / 128);
+      let worklet;
+      replaceGlobal(studio, 'AudioWorkletNode', class extends TestAudioNode {
+        port = {};
+        constructor(_ctx, _name, options) {
+          super('worklet');
+          assert.equal(options.channelCount, 3);
+          worklet = this;
+        }
+      });
+      await startDemoRecording();
+      assert.ok(preCountSource.stopTimes.length > 0);
+      assert.equal(getState().backingTrackPlaying, false);
+      assert.equal(oscillators().length - beforeCount, 4);
+      advanceAudioTo(t0 + 3 * (60 / 128) + 0.005);
+      assert.equal(trackSources(buffer).at(-1), preCountSource);
+      advanceAudioTo(downbeat - 0.01);
+      const demoSource = trackSources(buffer).at(-1);
+      assert.notEqual(demoSource, preCountSource);
+      assert.equal(demoSource.startTime, downbeat);
+      assert.equal(demoSource.offset, 0);
+      assert.deepEqual(demoSource.connections, [dryBus]);
+      advanceAudioTo(downbeat + 0.005);
+      assert.equal(isDemoRecording(), true);
+      assert.equal(getState().backingTrackPlaying, true);
+      assert.equal(getDebugTelemetry().running, false);
+      const frameStart = Math.ceil(downbeat * audio.sampleRate);
+      const samples = new Float32Array(2000);
+      advanceAudioTo((frameStart + samples.length) / audio.sampleRate);
+      worklet.port.onmessage({ data: { frame: frameStart, mL: samples, mR: samples, vM: samples } });
+      const session = await stopDemoRecording();
+      assert.equal(session.hasBackingTrack, true);
+      assert.equal(session.backingBuffer, buffer);
+      assert.equal(session.musicBuffer.numberOfChannels, 2);
+      assert.deepEqual(session.musicBuffer.getChannelData(0), samples);
+      assert.ok(session.backingPeaks.every(peak => peak === 0.25));
+      assert.equal(session.backingCaptureVol, 0.65);
+      const settings = { trimStartSec: 0.25, trimEndSec: 1.5, backingVol: 1.25 };
+      assert.ok(startDemoPreviewPlayback(settings, null, null, 0.5));
+      const previewBacking = trackSources(buffer).at(-1);
+      assert.equal(previewBacking.offset, 0.5 + session.backingStartSec);
+      assert.equal(previewBacking.duration, 1);
+      const [backingGain] = previewBacking.connections;
+      assert.equal(backingGain.gain.value, 1.25);
+      assert.equal(backingGain.connections[0].kind, 'compressor');
+      updateLivePreviewMix({ ...settings, backingVol: 0 });
+      assert.equal(backingGain.gain.targets.at(-1).value, 0);
+      assert.ok(startDemoPreviewPlayback(settings, null, null, 0.75));
+      assert.equal(previewBacking.stopTimes.length, 1);
+      stopDemoPreviewPlayback();
+
+      const OfflineCtx = window.OfflineAudioContext;
+      let offline;
+      window.OfflineAudioContext = class extends OfflineCtx {
+        constructor(...args) {
+          super(...args);
+          offline = this;
+        }
+      };
+      try {
+        await renderFinalMixBuffer(settings);
+        const exportBacking = offline.nodes.find(node => node.buffer === buffer);
+        assert.equal(exportBacking.offset, 0.25 + session.backingStartSec);
+        assert.equal(exportBacking.duration, 1.25);
+        assert.equal(exportBacking.connections[0].gain.value, 1.25);
+      } finally {
+        window.OfflineAudioContext = OfflineCtx;
+      }
+      pressLooperPlayStop();
+      const restarted = trackSources(buffer).at(-1);
+      stopAllTransportForPlayback();
+      assert.deepEqual(restarted.connections, []);
+      assert.equal(getState().backingTrackPlaying, false);
+      assert.equal(getState().loadedTrackName, filename);
+      assert.equal(hasLoadedBackingTrack(), true);
+
+      pressLooperPlayStop();
+      const replaced = trackSources(buffer).at(-1);
+      const bytes = new ArrayBuffer(8);
+      audio.decodeAudioData = async data => {
+        assert.equal(data, bytes);
+        return buffer;
+      };
+      const file = { name: 'sin-tempo.wav', arrayBuffer: async () => bytes };
+      assert.deepEqual(await loadLooperAudioFile(file), { ok: true, name: file.name, duration: 8, detectedBpm: null });
+      assert.deepEqual(replaced.connections, []);
+      assert.equal(getState().bpm, 128);
+      await assert.rejects(loadLooperAudioFile({ ...file, arrayBuffer: async () => { throw new Error('Audio ilegible'); } }));
+      assert.equal(getState().loadedTrackName, file.name);
+
+      importLooperSnapshot(loop);
+      pressLooperPlayStop();
+      const lastPlay = trackSources(buffer).at(-1);
+      const pendingLoad = loadLooperAudioFile(file);
+      pressLooperClear();
+      assert.deepEqual(await pendingLoad, { ok: false });
+      assert.deepEqual(lastPlay.connections, []);
+      assert.equal(getState().backingTrackPlaying, false);
+      assert.equal(getState().loadedTrackName, '');
+      assert.equal(getState().loadedTrackDuration, 0);
+      assert.equal(getState().loopBars, 0);
+      assert.equal(hasLoadedBackingTrack(), false);
+      assert.equal(getLoadedBackingTrackBuffer(), null);
+      assert.equal(session.backingBuffer, buffer);
+      assert.equal(getDebugTelemetry().running, false);
+      setBackingTrackVolume(0.90);
     });
   } finally {
     cancelDemoCountIn();

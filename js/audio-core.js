@@ -3,7 +3,7 @@
  * cadena Master, Reverb (0 LEDs = 100% seca por defecto) y FX de Eje Y.
  */
 
-import { getState } from './state.js';
+import { getState, setState } from './state.js';
 
 let audioCtx = null;
 let masterCompressor = null;
@@ -18,6 +18,7 @@ let reverbSendGain = null;
 let synthDryGain = null;
 let drumBus = null;
 let metroBus = null;
+let backingTrackBus = null;
 
 // Curvas de saturación cálida precalculadas para el modo Distorsión del Eje Y
 let softClipCurve = null;
@@ -136,10 +137,15 @@ export function ensureAudioUnlocked() {
     drumBus.gain.setValueAtTime(0.9, audioCtx.currentTime);
     drumBus.connect(masterCompressor);
 
+    // La base tiene su propia salida para conservar el máster como pista de música nueva.
+    backingTrackBus = audioCtx.createGain();
+    backingTrackBus.gain.setValueAtTime(getState().backingTrackVol, audioCtx.currentTime);
+    backingTrackBus.connect(audioCtx.destination);
+
     // Bus de Metrónomo
     metroBus = audioCtx.createGain();
     metroBus.gain.setValueAtTime(0.65, audioCtx.currentTime);
-    metroBus.connect(masterCompressor);
+    metroBus.connect(audioCtx.destination);
   }
 
   if (audioCtx.state === 'suspended') {
@@ -166,6 +172,17 @@ export function getDrumDestination() {
 export function getMetroDestination() {
   ensureAudioUnlocked();
   return metroBus;
+}
+
+export function getBackingTrackDestination() {
+  ensureAudioUnlocked();
+  return backingTrackBus;
+}
+
+export function setBackingTrackVolume(vol01) {
+  const volume = safeParam(vol01, 0, 1.5);
+  if (backingTrackBus) backingTrackBus.gain.setTargetAtTime(volume, audioCtx.currentTime, 0.02);
+  setState({ backingTrackVol: volume });
 }
 
 export function getMasterOutputNode() {

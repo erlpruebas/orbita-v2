@@ -11,10 +11,13 @@ import { playTonicReferencePreview, getActivePreset } from './synth-presets.js';
 import { getActiveDrumPattern } from './drum-engine.js';
 import { getActiveAccompanimentPattern } from './accompaniment.js';
 import { POPULAR_PROGRESSIONS, selectProgression } from './progressions.js';
+import { isDemoCountIn } from './demo-recorder.js';
+import { showSessionToast } from './ui-modals.js';
 import {
   toggleDrumPlayback,
   toggleProgressionPlayback,
   onBpmChanged,
+  loadLooperAudioFile,
   pressLooperRec,
   pressLooperPlayStop,
   pressLooperClear
@@ -200,12 +203,14 @@ export function renderDeckUI() {
   }
 
   // 6. Barra de Looper
+  const isCountIn = st.looperState === 'countin' || isDemoCountIn();
+  const hasTrack = st.loadedTrackDuration > 0;
   for (let b = 0; b < 4; b++) {
     const bLed = document.getElementById(`beat-led-${b}`);
     if (!bLed) continue;
     bLed.className = 'led-dot';
     if (st.currentBeat === b) {
-      if (st.looperState === 'countin') {
+      if (isCountIn) {
         bLed.classList.add('on-ruby');
       } else if (b === 0) {
         bLed.classList.add('on-amber');
@@ -217,8 +222,15 @@ export function renderDeckUI() {
 
   const barsBadge = document.getElementById('loop-bars-badge');
   if (barsBadge) {
-    if (st.looperState === 'countin') {
+    if (isCountIn) {
       barsBadge.textContent = `-${4 - Math.max(0, st.currentBeat)}`;
+    } else if (hasTrack) {
+      if (st.loopBars) {
+        barsBadge.textContent = `${st.loopBars}B+`;
+      } else {
+        const seconds = Math.floor(st.loadedTrackDuration);
+        barsBadge.textContent = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+      }
     } else {
       barsBadge.textContent = `${st.loopBars || 0}B`;
     }
@@ -236,8 +248,8 @@ export function renderDeckUI() {
 
   const playBtn = document.getElementById('btn-looper-play');
   const playLed = document.getElementById('looper-play-led');
+  const isPlaying = st.looperState === 'playing' || st.backingTrackPlaying;
   if (playBtn) {
-    const isPlaying = st.looperState === 'playing';
     playBtn.classList.toggle('is-play-active', isPlaying);
     const useEl = playBtn.querySelector('use');
     if (useEl) {
@@ -245,8 +257,12 @@ export function renderDeckUI() {
     }
   }
   if (playLed) {
-    playLed.classList.toggle('on-emerald', st.looperState === 'playing');
+    playLed.classList.toggle('on-emerald', isPlaying);
   }
+
+  const loadBtn = document.getElementById('btn-looper-load');
+  if (loadBtn) loadBtn.title = st.loadedTrackName || t('deck.loopLoad', st.lang);
+  document.getElementById('looper-load-led')?.classList.toggle('on-cyan', hasTrack);
 
   // 7. Barra OLED (Sonido · Acompañamiento · Batería · Progresión)
   const soundPreset = getActivePreset();
@@ -471,7 +487,7 @@ export function initDeckUI() {
     setState({ activeDrumSlot: (st.activeDrumSlot - 1 + count) % count });
   });
 
-  // 8. Barra de Looper (REC, PLAY/STOP, BORRAR)
+  // 8. Barra de Looper (REC, PLAY/STOP, CARGAR, BORRAR)
   document.getElementById('btn-looper-rec')?.addEventListener('pointerdown', (e) => {
     e.preventDefault();
     pressLooperRec();
@@ -479,7 +495,23 @@ export function initDeckUI() {
 
   document.getElementById('btn-looper-play')?.addEventListener('pointerdown', (e) => {
     e.preventDefault();
-    pressLooperPlayStop();
+    if (!isDemoCountIn()) pressLooperPlayStop();
+  });
+
+  const audioFileInput = document.getElementById('looper-audio-file-input');
+  document.getElementById('btn-looper-load')?.addEventListener('click', () => audioFileInput?.click());
+  audioFileInput?.addEventListener('change', async () => {
+    const file = audioFileInput.files[0];
+    audioFileInput.value = '';
+    if (!file) return;
+    try {
+      const result = await loadLooperAudioFile(file);
+      if (!result.ok) return;
+      const { detectedBpm } = result;
+      showSessionToast(detectedBpm === null ? 'deck.trackLoaded' : 'deck.trackLoadedTempo', { bpm: detectedBpm });
+    } catch (_) {
+      showSessionToast('deck.trackLoadError');
+    }
   });
 
   document.getElementById('btn-looper-clear')?.addEventListener('pointerdown', (e) => {

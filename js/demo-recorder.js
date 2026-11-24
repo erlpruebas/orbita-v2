@@ -1,12 +1,12 @@
 /**
- * demo-recorder.js — Estudio Multipista de Maquetas (2 Pistas Sincronizadas: Música + Voz)
+ * demo-recorder.js — Estudio Multipista de Maquetas (Música + Voz + Base opcional)
  * - Captura simultánea sample-accurate vía AudioWorklet de 3 canales:
  *   Canal 0/1 = Música estéreo de ÓRBITA | Canal 2 = Micrófono crudo
  * - Detiene automáticamente la batería y el looper al parar la grabación para escuchar en silencio
  * - Mezclador en tiempo real y renderizado offline (.WAV 16-bit estéreo):
  *   · Volumen Música (0–150%) y Volumen Voz (0–180%)
  *   · Eco en Voz (0 a 3 niveles) y Chorus estéreo en Voz (0 a 3 niveles)
- *   · Recorte de Inicio y Final (Trim Start / End) con forma de onda de 2 pistas
+ *   · Recorte de Inicio y Final (Trim Start / End) con forma de onda
  */
 
 import { ensureAudioUnlocked, getAudioContext, getMasterOutputNode, safeParam, triggerMetronomeClick } from './audio-core.js';
@@ -18,10 +18,10 @@ import { getActivePreset, setNoteEventObserver } from './synth-presets.js';
 import { formatChordLabel, getDiatonicDegrees, getNoteNameTitle, getNoteNameUpper } from './theory.js';
 
 const VOICE_FILTER_PRESETS = [
-  { highpassHz: 40, deMudDb: 0, presenceDb: 0, lowpassHz: 20000, gateThreshold: 0, gateFloor: 1.0, musicDuckAmt: 0 },
-  { highpassHz: 95, deMudDb: -2.0, presenceDb: 1.2, lowpassHz: 15000, gateThreshold: 0.008, gateFloor: 0.45, musicDuckAmt: 0.25 },
-  { highpassHz: 130, deMudDb: -3.5, presenceDb: 2.5, lowpassHz: 12000, gateThreshold: 0.015, gateFloor: 0.20, musicDuckAmt: 0.55 },
-  { highpassHz: 165, deMudDb: -5.0, presenceDb: 3.5, lowpassHz: 9500, gateThreshold: 0.024, gateFloor: 0.06, musicDuckAmt: 0.85 }
+  { bleedCancel: 0, gateStrength: 0, gateFloor: 1.0, highpassHz: 40, deMudDb: 0, presenceDb: 0, lowpassHz: 20000 },
+  { bleedCancel: 0.40, gateStrength: 0.35, gateFloor: 0.32, highpassHz: 105, deMudDb: -3.0, presenceDb: 2.0, lowpassHz: 14000 },
+  { bleedCancel: 0.72, gateStrength: 0.65, gateFloor: 0.08, highpassHz: 155, deMudDb: -5.0, presenceDb: 3.5, lowpassHz: 10500 },
+  { bleedCancel: 1.0, gateStrength: 0.95, gateFloor: 0.01, highpassHz: 205, deMudDb: -6.5, presenceDb: 5.0, lowpassHz: 8200 }
 ];
 
 export function getVoiceFilterPreset(level) {
@@ -43,6 +43,8 @@ let recordedNoteEvents = [];
 let keyboardDegrees = [];
 let recordingStartAudioTime = null;
 let firstCapturedFrame = null;
+let recordedBackingBuffer = null;
+let recordedBackingVol = 0.90;
 
 // Nodos de grabación multipista
 let musicSplitter = null;
@@ -53,6 +55,7 @@ let micHighpass = null;
 let mergerNode = null;
 let workletNode = null;
 let workletLoaded = false;
+let workletFlush = null;
 let silentSink = null;
 let scriptProcessor = null;
 let scriptCaptureGate = null;
@@ -71,7 +74,7 @@ let hasMicActive = false;
 let micWarningReason = '';
 let detectedRoundTripMs = 110; // Estimación inicial de latencia ida y vuelta (salida + entrada + AEC)
 
-// Sesión actual grabada en memoria (AudioBuffers de 2 pistas)
+// Sesión actual grabada en memoria, con una referencia a la base si se reprodujo.
 let currentSession = null;
 let filteredVoice = null;
 
@@ -98,23 +101,76 @@ export function saveVoiceSyncMs(ms) {
 }
 
 const MULTITRACK_WORKLET_CODE = `
+const BLOCK_SIZE = 4096;
 class OrbitaMultitrackProcessor extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.startFrame = Infinity;
+    this.endFrame = Infinity;
+    this.processedThrough = currentFrame;
+    this.allocateBlock();
+    this.port.onmessage = ({ data }) => {
+      if (data.type === 'start') this.startFrame = data.frame;
+      if (data.type === 'flush') {
+        this.endFrame = data.frame ?? this.processedThrough;
+        if (this.processedThrough >= this.endFrame) this.finish();
+      }
+    };
+  }
+
+  allocateBlock() {
+    this.buffer = new ArrayBuffer(3 * BLOCK_SIZE * Float32Array.BYTES_PER_ELEMENT);
+    this.mL = new Float32Array(this.buffer, 0, BLOCK_SIZE);
+    this.mR = new Float32Array(this.buffer, this.mL.byteLength, BLOCK_SIZE);
+    this.vM = new Float32Array(this.buffer, 2 * this.mL.byteLength, BLOCK_SIZE);
+    this.length = 0;
+  }
+
+  sendBlock() {
+    if (this.length === 0) return;
+    this.port.postMessage({
+      frame: this.frame, length: this.length, mL: this.mL, mR: this.mR, vM: this.vM
+    }, [this.buffer]);
+    this.length = 0;
+  }
+
+  finish() {
+    this.finished = true;
+    this.sendBlock();
+    this.port.postMessage({ type: 'flushed' });
+  }
+
   process(inputs) {
-    const input = inputs[0];
-    if (input && input.length >= 1) {
-      const mL = input[0];
-      const mR = input.length > 1 ? input[1] : input[0];
-      const vM = input.length > 2 ? input[2] : null;
-      if (mL && mL.length > 0) {
-        this.port.postMessage({
-          frame: currentFrame,
-          mL: new Float32Array(mL),
-          mR: new Float32Array(mR),
-          vM: vM ? new Float32Array(vM) : null
-        });
+    if (this.finished) return false;
+    const mL = inputs[0]?.[0];
+    if (!mL) return true;
+    const mR = inputs[0][1] ?? mL;
+    const vM = inputs[0][2];
+    const limit = Math.min(mL.length, this.endFrame - currentFrame);
+    let read = Math.max(0, this.startFrame - currentFrame);
+    while (read < limit) {
+      if (this.length === 0) this.frame = currentFrame + read;
+      const count = Math.min(limit - read, BLOCK_SIZE - this.length);
+      if (count === mL.length) {
+        this.mL.set(mL, this.length);
+        this.mR.set(mR, this.length);
+        if (vM) this.vM.set(vM, this.length);
+      } else {
+        const end = read + count;
+        this.mL.set(mL.subarray(read, end), this.length);
+        this.mR.set(mR.subarray(read, end), this.length);
+        if (vM) this.vM.set(vM.subarray(read, end), this.length);
+      }
+      read += count;
+      this.length += count;
+      if (this.length === BLOCK_SIZE) {
+        this.sendBlock();
+        this.allocateBlock();
       }
     }
-    return true;
+    this.processedThrough = currentFrame + mL.length;
+    if (this.processedThrough >= this.endFrame) this.finish();
+    return !this.finished;
   }
 }
 registerProcessor('orbita-multitrack-recorder', OrbitaMultitrackProcessor);
@@ -166,54 +222,165 @@ export function formatPreciseTime(sec) {
 }
 
 function makeFilename(ext = 'wav') {
+  const { bpm } = getState();
   const d = new Date();
   const pad = (n) => String(n).padStart(2, '0');
   const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
-  return `orbita-maqueta-${stamp}.${ext}`;
+  return `orbita-maqueta-T${bpm}-${stamp}.${ext}`;
 }
 
-function concatFloat32Chunks(chunks) {
-  let total = 0;
-  for (const c of chunks) total += c.length;
-  const out = new Float32Array(total);
+function copyCapturedChannel(buffer, channel, chunks) {
+  const dest = buffer.getChannelData(channel);
   let offset = 0;
-  for (const c of chunks) {
-    out.set(c, offset);
-    offset += c.length;
+  for (const chunk of chunks) {
+    const count = Math.min(chunk.length, dest.length - offset);
+    dest.set(count < chunk.length ? chunk.subarray(0, count) : chunk, offset);
+    offset += count;
+    if (offset === dest.length) break;
   }
-  return out;
 }
 
 export function buildFilteredVoiceSamples(rawVoiceSamples, musicSamples, sampleRate, level, voiceOffsetMs = 0) {
-  const { gateThreshold, gateFloor, musicDuckAmt } = getVoiceFilterPreset(level);
-  if (!gateThreshold) return rawVoiceSamples.slice();
-
-  const samples = new Float32Array(rawVoiceSamples.length);
-  const attack = 1 - Math.exp(-1 / (0.006 * sampleRate));
-  const release = 1 - Math.exp(-1 / (0.090 * sampleRate));
-  const detector = 1 - Math.exp(-1 / (0.008 * sampleRate));
-  const shift = Math.round(voiceOffsetMs * sampleRate / 1000);
-  let voicePower = 0;
-  let musicPower = 0;
-  let gain = gateFloor;
-  for (let i = 0; i < rawVoiceSamples.length; i++) {
-    const voice = rawVoiceSamples[i];
-    const music = musicSamples?.[i + shift] ?? 0;
-    voicePower += (voice * voice - voicePower) * detector;
-    musicPower += (music * music - musicPower) * detector;
-    const musicRms = Math.sqrt(musicPower);
-    // Elevar el umbral con la música alineada, limitándolo para conservar las frases suaves.
-    const leakage = Math.min(2 * gateThreshold, 0.22 * musicRms) * musicDuckAmt;
-    const ratio = (Math.sqrt(voicePower) - leakage) / gateThreshold;
-    const open = Math.max(0, Math.min(1, ratio - 0.65));
-    const vocalActivity = open * open * (3 - 2 * open);
-    const musicActivity = musicRms / (musicRms + 0.045);
-    const quietGain = gateFloor * (1 - musicDuckAmt * musicActivity);
-    const target = quietGain + (1 - quietGain) * vocalActivity;
-    gain += (target - gain) * (target > gain ? attack : release);
-    samples[i] = voice * gain;
-  }
+  const samples = rawVoiceSamples.slice();
+  const readMusic = musicSamples ? i => musicSamples[i] ?? 0 : null;
+  filterVoiceWithReference(samples, readMusic, sampleRate, level, voiceOffsetMs);
   return samples;
+}
+
+// Busca el retardo dominante para que el sonido directo pueda caer exactamente en uno de los taps.
+function findDominantBleedDelay(raw, readMusic, shift, firstDelay, lastDelay) {
+  const stride = Math.max(1, Math.floor(raw.length / 2048));
+  let bestDelay = 0;
+  let bestCorrelation = 0.14;
+  for (let delay = firstDelay; delay <= lastDelay; delay++) {
+    let cross = 0;
+    let micPower = 0;
+    let musicPower = 0;
+    for (let i = 0; i < raw.length; i += stride) {
+      const music = readMusic(i + shift - delay);
+      const mic = raw[i];
+      cross += mic * music;
+      micPower += mic * mic;
+      musicPower += music * music;
+    }
+    const correlation = Math.abs(cross) / Math.sqrt(micPower * musicPower + 1e-12);
+    if (correlation > bestCorrelation) {
+      bestCorrelation = correlation;
+      bestDelay = delay;
+    }
+  }
+  return bestDelay;
+}
+
+function cancelSpeakerBleed(samples, readMusic, rate, shift, windowSize, musicRms, micRms, amount) {
+  const firstDelay = -Math.round(0.003 * rate);
+  const lastDelay = Math.round(0.018 * rate);
+  const dominant = findDominantBleedDelay(samples, readMusic, shift, firstDelay, lastDelay);
+  const weights = new Float32Array(24);
+  const taps = Int32Array.from(weights, (_, k) => Math.round(k <= 3
+    ? firstDelay * (1 - k / 3)
+    : lastDelay * (k - 3) / 20));
+  let nearest = 1;
+  for (let k = 2; k < taps.length - 1; k++) {
+    if (Math.abs(taps[k] - dominant) < Math.abs(taps[nearest] - dominant)) nearest = k;
+  }
+  if (dominant > firstDelay && dominant < lastDelay) taps[nearest] = dominant;
+  for (let k = 0; k < taps.length; k++) taps[k] -= firstDelay;
+
+  // El anillo evalúa la referencia una vez por muestra, incluida la base si existe.
+  const history = new Float32Array(2 ** Math.ceil(Math.log2(lastDelay - firstDelay + 1)));
+  const mask = history.length - 1;
+  for (let i = -history.length + 1; i < 0; i++) history[i & mask] = readMusic(i + shift - firstDelay);
+  const adaptEvery = Math.max(1, Math.round(rate / 12000));
+  let nextAdapt = 0;
+  for (let w = 0; w < musicRms.length; w++) {
+    const start = w * windowSize;
+    const end = Math.min(start + windowSize, samples.length);
+    const ratio = micRms[w] / Math.max(1e-6, musicRms[w]);
+    // La voz dominante reduce el paso de adaptación. Los pesos ya aprendidos siguen activos.
+    const step = 0.22 / (1 + 16 * Math.max(0, ratio - 1) ** 2);
+    for (let i = start; i < end; i++) {
+      history[i & mask] = readMusic(i + shift - firstDelay);
+      let prediction = 0;
+      for (let k = 0; k < taps.length; k++) prediction += weights[k] * history[(i - taps[k]) & mask];
+      const error = samples[i] - prediction;
+      samples[i] -= amount * prediction;
+      if (i < nextAdapt) continue;
+      nextAdapt = i + adaptEvery;
+      let power = 0;
+      for (let k = 0; k < taps.length; k++) {
+        const reference = history[(i - taps[k]) & mask];
+        power += reference * reference;
+      }
+      if (power < 1e-9) continue;
+      const correction = step * error / (power + 1e-5);
+      for (let k = 0; k < taps.length; k++) weights[k] += correction * history[(i - taps[k]) & mask];
+    }
+  }
+}
+
+function filterVoiceWithReference(samples, readMusic, sampleRate, level, voiceOffsetMs) {
+  const { bleedCancel, gateStrength, gateFloor } = getVoiceFilterPreset(level);
+  if (!gateStrength || samples.length === 0) return;
+
+  const shift = Math.round((Number(voiceOffsetMs) || 0) * sampleRate / 1000);
+  const windowSize = Math.max(1, Math.round(sampleRate * 0.020));
+  const musicRms = new Float32Array(Math.ceil(samples.length / windowSize));
+  const voiceRms = new Float32Array(musicRms.length);
+  let hasMusic = false;
+  if (readMusic && bleedCancel) {
+    for (let w = 0; w < musicRms.length; w++) {
+      const start = w * windowSize;
+      const end = Math.min(start + windowSize, samples.length);
+      let musicPower = 0;
+      let micPower = 0;
+      for (let i = start; i < end; i++) {
+        const music = readMusic(i + shift);
+        musicPower += music * music;
+        micPower += samples[i] * samples[i];
+      }
+      musicRms[w] = Math.sqrt(musicPower / (end - start));
+      voiceRms[w] = Math.sqrt(micPower / (end - start));
+      hasMusic ||= musicRms[w] > 1e-6;
+    }
+    if (hasMusic) cancelSpeakerBleed(samples, readMusic, sampleRate, shift, windowSize, musicRms, voiceRms, bleedCancel);
+  }
+
+  for (let w = 0; w < voiceRms.length; w++) {
+    const start = w * windowSize;
+    const end = Math.min(start + windowSize, samples.length);
+    let power = 0;
+    for (let i = start; i < end; i++) power += samples[i] * samples[i];
+    voiceRms[w] = Math.sqrt(power / (end - start));
+  }
+  const sorted = voiceRms.slice().sort();
+  const noise = sorted[Math.floor((sorted.length - 1) * 0.20)];
+  const singing = sorted[Math.floor((sorted.length - 1) * 0.92)];
+  const range = singing - noise;
+  const threshold = noise + range * (0.12 + 0.25 * gateStrength);
+  const knee = Math.max(1e-8, noise * 0.25, range * 0.15);
+  const attack = 1 - Math.exp(-1 / (0.005 * sampleRate));
+  const holdSamples = Math.round(0.035 * sampleRate);
+  const release = 1 - Math.exp(-1 / (0.085 * sampleRate));
+  let gain = gateFloor;
+  let heldGain = gateFloor;
+  let hold = 0;
+  for (let w = 0; w < voiceRms.length; w++) {
+    const reinforcement = gateStrength * Math.min((noise + range) * 0.11, musicRms[w] * 0.25);
+    const open = safeParam((voiceRms[w] - threshold - reinforcement) / knee, 0, 1);
+    const target = gateFloor + (1 - gateFloor) * open * open * (3 - 2 * open);
+    const end = Math.min((w + 1) * windowSize, samples.length);
+    for (let i = w * windowSize; i < end; i++) {
+      if (target >= heldGain || hold <= 0) {
+        heldGain = target;
+        hold = holdSamples;
+      } else {
+        hold--;
+      }
+      gain += (heldGain - gain) * (heldGain > gain ? attack : release);
+      samples[i] *= gain;
+    }
+  }
 }
 
 function getKeyboardDegrees(state) {
@@ -265,15 +432,15 @@ function setCameraLivePreview(stream) {
   if (pip) pip.hidden = !stream;
 }
 
-function computeWaveformPeaks(channelData, bins = 220) {
+function computeWaveformPeaks(channelData, bins = 220, length = channelData?.length ?? 0, offset = 0, right = channelData) {
   const peaks = new Float32Array(bins);
   if (!channelData || channelData.length === 0) return peaks;
   for (let b = 0; b < bins; b++) {
-    const start = Math.floor(b * channelData.length / bins);
-    const end = Math.floor((b + 1) * channelData.length / bins);
+    const start = offset + Math.floor(b * length / bins);
+    const end = Math.min(channelData.length, offset + Math.floor((b + 1) * length / bins));
     let maxVal = 0;
     for (let i = start; i < end; i++) {
-      const a = Math.abs(channelData[i]);
+      const a = Math.max(Math.abs(channelData[i]), Math.abs(right[i]));
       if (a > maxVal) maxVal = a;
     }
     peaks[b] = maxVal;
@@ -281,25 +448,43 @@ function computeWaveformPeaks(channelData, bins = 220) {
   return peaks;
 }
 
+function getMusicReference(musicBuffer, backingBuffer, backingCaptureVol, backingStartSec) {
+  const left = musicBuffer.getChannelData(0);
+  const right = musicBuffer.numberOfChannels > 1 ? musicBuffer.getChannelData(1) : left;
+  const readMusic = i => ((left[i] ?? 0) + (right[i] ?? 0)) * 0.5;
+  if (!backingBuffer || backingCaptureVol === 0) return readMusic;
+
+  const backingLeft = backingBuffer.getChannelData(0);
+  const backingRight = backingBuffer.numberOfChannels > 1 ? backingBuffer.getChannelData(1) : backingLeft;
+  const ratio = backingBuffer.sampleRate / musicBuffer.sampleRate;
+  const offset = backingStartSec * backingBuffer.sampleRate;
+  const readBacking = i => ((backingLeft[i] ?? 0) + (backingRight[i] ?? 0)) * 0.5;
+  if (ratio === 1 && offset === 0) {
+    return i => readMusic(i) + backingCaptureVol * readBacking(i);
+  }
+  return i => {
+    const position = i * ratio + offset;
+    const frame = Math.floor(position);
+    const fraction = position - frame;
+    const sample = readBacking(frame);
+    return readMusic(i) + backingCaptureVol * (sample + fraction * (readBacking(frame + 1) - sample));
+  };
+}
+
 function getStudioVoice(settings) {
   if (!currentSession?.voiceBuffer) return null;
-  if (!getVoiceFilterPreset(settings.voiceFilter).gateThreshold) {
+  if (!getVoiceFilterPreset(settings.voiceFilter).gateStrength) {
     return { buffer: currentSession.voiceBuffer, peaks: currentSession.voicePeaks };
   }
   const { voiceFilter: level, voiceOffsetMs = 0 } = settings;
   if (filteredVoice?.level === level && filteredVoice.voiceOffsetMs === voiceOffsetMs) return filteredVoice;
 
-  const { voiceBuffer, musicBuffer } = currentSession;
-  const musicL = musicBuffer.getChannelData(0);
-  let music = musicL;
-  if (musicBuffer.numberOfChannels > 1) {
-    const musicR = musicBuffer.getChannelData(1);
-    // Tomar el canal dominante por muestra para detectar también señales estéreo en contrafase.
-    music = musicL.map((left, i) => Math.max(Math.abs(left), Math.abs(musicR[i])));
-  }
-  const samples = buildFilteredVoiceSamples(voiceBuffer.getChannelData(0), music, voiceBuffer.sampleRate, level, voiceOffsetMs);
-  const buffer = getAudioContext().createBuffer(1, samples.length, voiceBuffer.sampleRate);
-  buffer.copyToChannel(samples, 0);
+  const { voiceBuffer, musicBuffer, backingBuffer, backingCaptureVol, backingStartSec } = currentSession;
+  const readMusic = getMusicReference(musicBuffer, backingBuffer, backingCaptureVol, backingStartSec);
+  const buffer = getAudioContext().createBuffer(1, voiceBuffer.length, voiceBuffer.sampleRate);
+  const samples = buffer.getChannelData(0);
+  samples.set(voiceBuffer.getChannelData(0));
+  filterVoiceWithReference(samples, readMusic, voiceBuffer.sampleRate, level, voiceOffsetMs);
   filteredVoice = { level, voiceOffsetMs, buffer, peaks: computeWaveformPeaks(samples) };
   return filteredVoice;
 }
@@ -408,10 +593,10 @@ function encodeAudioBufferToMp3Blob(audioBuffer, kbps = 192) {
 }
 
 /**
- * Construye el grafo de mezcla de 2 pistas (Música + Voz con Chorus 0-3 y Eco 0-3).
+ * Construye el grafo de música, voz con efectos y base opcional.
  * Se usa de forma IDÉNTICA tanto para la preescucha en tiempo real como para el render offline .WAV.
  */
-function buildTwoTrackMixGraph(ctx, destNode, settings) {
+function buildTwoTrackMixGraph(ctx, destNode, settings, hasBackingTrack = false) {
   const now = ctx.currentTime;
 
   const masterLimiter = ctx.createDynamicsCompressor();
@@ -427,20 +612,30 @@ function buildTwoTrackMixGraph(ctx, destNode, settings) {
   musicGain.gain.setValueAtTime(safeParam(settings.musicVol ?? 0.90, 0, 2.0), now);
   musicGain.connect(masterLimiter);
 
+  const backingGain = hasBackingTrack ? ctx.createGain() : null;
+  if (backingGain) {
+    backingGain.gain.setValueAtTime(safeParam(settings.backingVol ?? 0.90, 0, 1.5), now);
+    backingGain.connect(masterLimiter);
+  }
+
   // PISTA 2: EQ, chorus estéreo y eco. El nivel 0 deja pasar la captura sin otra EQ.
   const voiceInputGain = ctx.createGain();
   voiceInputGain.gain.setValueAtTime(safeParam(settings.voiceVol ?? 1.15, 0, 2.5), now);
   const filter = getVoiceFilterPreset(settings.voiceFilter);
-  const highpass = ctx.createBiquadFilter();
-  highpass.type = 'highpass';
-  highpass.frequency.setValueAtTime(filter.highpassHz, now);
+  const [highpass, highpass2] = [-5.33, 2.32].map(q => {
+    const stage = ctx.createBiquadFilter();
+    stage.type = 'highpass';
+    stage.frequency.setValueAtTime(filter.highpassHz, now);
+    stage.Q.setValueAtTime(q, now);
+    return stage;
+  });
   const deMud = ctx.createBiquadFilter();
   deMud.type = 'peaking';
-  deMud.frequency.setValueAtTime(260, now);
+  deMud.frequency.setValueAtTime(250, now);
   deMud.gain.setValueAtTime(filter.deMudDb, now);
   const presence = ctx.createBiquadFilter();
   presence.type = 'peaking';
-  presence.frequency.setValueAtTime(3200, now);
+  presence.frequency.setValueAtTime(3300, now);
   presence.gain.setValueAtTime(filter.presenceDb, now);
   const lowpass = ctx.createBiquadFilter();
   lowpass.type = 'lowpass';
@@ -448,9 +643,9 @@ function buildTwoTrackMixGraph(ctx, destNode, settings) {
   const voiceEq = ctx.createGain();
   const voiceBypass = ctx.createGain();
   const postEq = ctx.createGain();
-  voiceEq.gain.setValueAtTime(filter.gateThreshold ? 1 : 0, now);
-  voiceBypass.gain.setValueAtTime(filter.gateThreshold ? 0 : 1, now);
-  voiceInputGain.connect(highpass).connect(deMud).connect(presence).connect(lowpass).connect(voiceEq).connect(postEq);
+  voiceEq.gain.setValueAtTime(filter.gateStrength ? 1 : 0, now);
+  voiceBypass.gain.setValueAtTime(filter.gateStrength ? 0 : 1, now);
+  voiceInputGain.connect(highpass).connect(highpass2).connect(deMud).connect(presence).connect(lowpass).connect(voiceEq).connect(postEq);
   voiceInputGain.connect(voiceBypass).connect(postEq);
 
   // --- CHORUS ESTÉREO (0..3) ---
@@ -524,19 +719,22 @@ function buildTwoTrackMixGraph(ctx, destNode, settings) {
 
   return {
     musicGain,
+    backingGain,
     voiceInputGain,
     updateParams(newSettings) {
       const t = ctx.currentTime;
       musicGain.gain.setTargetAtTime(safeParam(newSettings.musicVol ?? 0.90, 0, 2.0), t, 0.02);
+      backingGain?.gain.setTargetAtTime(safeParam(newSettings.backingVol ?? 0.90, 0, 1.5), t, 0.02);
       voiceInputGain.gain.setTargetAtTime(safeParam(newSettings.voiceVol ?? 1.15, 0, 2.5), t, 0.02);
 
       const f = getVoiceFilterPreset(newSettings.voiceFilter);
       highpass.frequency.setTargetAtTime(f.highpassHz, t, 0.02);
+      highpass2.frequency.setTargetAtTime(f.highpassHz, t, 0.02);
       deMud.gain.setTargetAtTime(f.deMudDb, t, 0.02);
       presence.gain.setTargetAtTime(f.presenceDb, t, 0.02);
       lowpass.frequency.setTargetAtTime(f.lowpassHz, t, 0.02);
-      voiceEq.gain.setTargetAtTime(f.gateThreshold ? 1 : 0, t, 0.02);
-      voiceBypass.gain.setTargetAtTime(f.gateThreshold ? 0 : 1, t, 0.02);
+      voiceEq.gain.setTargetAtTime(f.gateStrength ? 1 : 0, t, 0.02);
+      voiceBypass.gain.setTargetAtTime(f.gateStrength ? 0 : 1, t, 0.02);
 
       const c = CHORUS_PRESETS[Math.max(0, Math.min(3, newSettings.voiceChorus || 0))];
       chorusWet.gain.setTargetAtTime(c.wet, t, 0.03);
@@ -599,6 +797,7 @@ async function prepareDemoCapture(ctx) {
   micWarningReason = '';
   recordingStartAudioTime = null;
   firstCapturedFrame = null;
+  recordedBackingBuffer = null;
   recordedNoteEvents = [];
 
   // 1. Tap estéreo de la música interna de ÓRBITA
@@ -671,12 +870,18 @@ async function prepareDemoCapture(ctx) {
       });
 
       workletNode.port.onmessage = ({ data }) => {
-        if (recordingStartAudioTime === null || !isDemoRecordingOrCountIn()) return;
+        if (data.type === 'flushed') {
+          workletFlush?.done();
+          return;
+        }
+        if (recordingStartAudioTime === null || (!isDemoRecordingOrCountIn() && !workletFlush)) return;
         // Conservar solo las muestras desde el tiempo 1, incluso si cae dentro de un bloque.
         const startFrame = Math.ceil(recordingStartAudioTime * ctx.sampleRate);
         const skip = Math.max(0, startFrame - data.frame);
-        if (skip >= data.mL.length) return;
-        captureSamples(data.frame + skip, data.mL.subarray(skip), data.mR.subarray(skip), data.vM?.subarray(skip));
+        const end = Math.min(data.length ?? data.mL.length, (workletFlush?.endFrame ?? Infinity) - data.frame);
+        if (skip >= end) return;
+        const slice = channel => skip === 0 && end === channel.length ? channel : channel.subarray(skip, end);
+        captureSamples(data.frame + skip, slice(data.mL), slice(data.mR), data.vM ? slice(data.vM) : null);
       };
 
       mergerNode.connect(workletNode);
@@ -749,6 +954,7 @@ function scheduleDemoCountIn(ctx) {
   const recordStartAt = t0 + 4 * beatDur;
   recordingStartAudioTime = recordStartAt;
   isCountingIn = true;
+  workletNode?.port.postMessage?.({ type: 'start', frame: Math.ceil(recordStartAt * ctx.sampleRate) });
   scriptCaptureGate?.gain.setValueAtTime(1, recordStartAt);
   if (fallbackRecorder) musicTapGain.gain.setValueAtTime(1, recordStartAt);
 
@@ -767,7 +973,8 @@ function scheduleDemoCountIn(ctx) {
   // Programar el transporte con margen para que Web Audio ejecute el primer paso en recordStartAt.
   scheduleCountInCue(ctx, recordStartAt - 0.06, () => {
     setNoteEventObserver(recordNoteEvent);
-    startArmedTransportAt(recordStartAt, armed);
+    recordedBackingBuffer = startArmedTransportAt(recordStartAt, armed);
+    recordedBackingVol = getState().backingTrackVol;
   });
   scheduleCountInCue(ctx, recordStartAt, () => {
     countInClicks.length = 0;
@@ -795,6 +1002,7 @@ export function cancelDemoCountIn() {
   countInClicks.length = 0;
   setNoteEventObserver(null);
   recordedNoteEvents = [];
+  recordedBackingBuffer = null;
   stopAllTransportForPlayback();
   releasePreparedCapture();
   const notify = statusCallback;
@@ -841,9 +1049,30 @@ function disconnectDemoCapture() {
   fallbackRecorder = null;
 }
 
+function flushMultitrackWorklet(endFrame) {
+  const port = workletNode?.port;
+  if (typeof port?.postMessage !== 'function') return;
+  return new Promise(resolve => {
+    // Un contexto interrumpido puede dejar de responder al puerto.
+    const timeout = setTimeout(resolve, 250);
+    const done = () => {
+      clearTimeout(timeout);
+      resolve();
+    };
+    workletFlush = { endFrame, done };
+    try {
+      port.postMessage({ type: 'flush', frame: endFrame });
+    } catch (_) {
+      done();
+    }
+  }).finally(() => {
+    workletFlush = null;
+  });
+}
+
 /**
  * Detiene la grabación, PARA LA BATERÍA Y EL LOOPER para escuchar en silencio,
- * libera el micrófono y construye la sesión multipista de 2 pistas listas para mezclar y recortar.
+ * libera el micrófono y construye la sesión multipista.
  */
 export async function stopDemoRecording() {
   if (!isRecording) return null;
@@ -857,6 +1086,12 @@ export async function stopDemoRecording() {
 }
 
 async function finishDemoRecording() {
+  const ctx = ensureAudioUnlocked();
+  const sampleRate = ctx.sampleRate;
+  const flush = flushMultitrackWorklet(Math.round(ctx.currentTime * sampleRate));
+  const backingBuffer = recordedBackingBuffer;
+  const backingCaptureVol = recordedBackingVol;
+  recordedBackingBuffer = null;
   setNoteEventObserver(null);
   const cameraResult = cameraCapture?.stop();
   cameraCapture = null;
@@ -870,9 +1105,6 @@ async function finishDemoRecording() {
   // Detener automáticamente batería y looper al terminar de grabar la maqueta
   stopAllTransportForPlayback();
 
-  const ctx = ensureAudioUnlocked();
-  const sampleRate = ctx.sampleRate;
-
   let fallbackBlob = null;
   if (fallbackRecorder && fallbackRecorder.state !== 'inactive') {
     fallbackBlob = await new Promise((resolve) => {
@@ -883,6 +1115,7 @@ async function finishDemoRecording() {
     });
   }
 
+  if (flush) await flush;
   disconnectDemoCapture();
   const notify = statusCallback;
   statusCallback = null;
@@ -892,17 +1125,15 @@ async function finishDemoRecording() {
   let voiceBuffer = null;
 
   if (rawMusicL.length > 0) {
-    const mL = concatFloat32Chunks(rawMusicL);
-    const mR = concatFloat32Chunks(rawMusicR);
-    musicBuffer = ctx.createBuffer(2, mL.length, sampleRate);
-    musicBuffer.copyToChannel(mL, 0);
-    musicBuffer.copyToChannel(mR, 1);
+    const frames = rawMusicL.reduce((count, chunk) => count + chunk.length, 0);
+    musicBuffer = ctx.createBuffer(2, frames, sampleRate);
+    copyCapturedChannel(musicBuffer, 0, rawMusicL);
+    copyCapturedChannel(musicBuffer, 1, rawMusicR);
 
     if (hasMicActive && rawVoice.length > 0) {
-      const vM = concatFloat32Chunks(rawVoice);
-      const vLen = Math.min(vM.length, mL.length);
+      const vLen = Math.min(rawVoice.reduce((count, chunk) => count + chunk.length, 0), frames);
       voiceBuffer = ctx.createBuffer(1, vLen, sampleRate);
-      voiceBuffer.copyToChannel(vM.subarray(0, vLen), 0);
+      copyCapturedChannel(voiceBuffer, 0, rawVoice);
     }
   } else if (fallbackBlob) {
     try {
@@ -921,14 +1152,24 @@ async function finishDemoRecording() {
 
   const durationSec = musicBuffer.duration;
   const musicPeaks = computeWaveformPeaks(musicBuffer.getChannelData(0), 220);
+  const audioStart = firstCapturedFrame === null ? recordingStartAudioTime : firstCapturedFrame / sampleRate;
+  const backingStartSec = Math.max(0, audioStart - recordingStartAudioTime);
+  let backingPeaks = null;
+  if (backingBuffer) {
+    const left = backingBuffer.getChannelData(0);
+    const right = backingBuffer.numberOfChannels > 1 ? backingBuffer.getChannelData(1) : left;
+    const length = Math.round(durationSec * backingBuffer.sampleRate);
+    const offset = Math.round(backingStartSec * backingBuffer.sampleRate);
+    backingPeaks = computeWaveformPeaks(left, musicPeaks.length, length, offset, right);
+  }
 
   // Estimar el desfase óptimo automáticamente:
   // 1) Correlación cruzada de envolventes (detecta filtración acústica o pulsos rítmicos entre 40 ms y 320 ms)
   // 2) Combinado con la latencia hardware medida (`detectedRoundTripMs`)
-  const autoMeasuredOffsetMs = estimateVoiceSyncOffsetMs(musicBuffer, voiceBuffer, detectedRoundTripMs);
+  const readMusic = getMusicReference(musicBuffer, backingBuffer, backingCaptureVol, backingStartSec);
+  const autoMeasuredOffsetMs = estimateVoiceSyncOffsetMs(musicBuffer, voiceBuffer, detectedRoundTripMs, readMusic);
   const voiceSamples = voiceBuffer?.getChannelData(0);
   const voicePeaks = voiceSamples ? computeWaveformPeaks(voiceSamples, 220) : null;
-  const audioStart = firstCapturedFrame === null ? recordingStartAudioTime : firstCapturedFrame / sampleRate;
   const noteEvents = recordedNoteEvents
     .filter(event => !event.cancelled)
     .map(({ when, cancelled, ...event }) => ({ ...event, timeSec: when - audioStart }))
@@ -942,9 +1183,14 @@ async function finishDemoRecording() {
     durationSec,
     musicBuffer,
     voiceBuffer,
+    backingBuffer,
+    backingStartSec,
+    backingCaptureVol,
     musicPeaks,
     voicePeaks,
+    backingPeaks,
     hasVoiceTrack: Boolean(voiceBuffer),
+    hasBackingTrack: Boolean(backingBuffer),
     micWarning: micWarningReason,
     cameraBlob,
     cameraUnavailable: cameraRequested && !cameraBlob,
@@ -962,7 +1208,7 @@ async function finishDemoRecording() {
  * Estima la latencia acústica/hardware entre la pista de Música y la de Voz (en ms negativos,
  * es decir, cuánto adelantar la Voz para alinearla exactamente con la Música).
  */
-export function estimateVoiceSyncOffsetMs(musicBuffer, voiceBuffer, fallbackRoundTripMs = 110) {
+export function estimateVoiceSyncOffsetMs(musicBuffer, voiceBuffer, fallbackRoundTripMs = 110, readMusic = null) {
   if (!musicBuffer || !voiceBuffer || musicBuffer.duration < 0.8) {
     return -Math.round(fallbackRoundTripMs);
   }
@@ -974,7 +1220,7 @@ export function estimateVoiceSyncOffsetMs(musicBuffer, voiceBuffer, fallbackRoun
   const numBins = Math.floor(maxSamples / binSamples);
   if (numBins < 120) return -Math.round(fallbackRoundTripMs);
 
-  const mData = musicBuffer.getChannelData(0);
+  const mData = readMusic ? null : musicBuffer.getChannelData(0);
   const vData = voiceBuffer.getChannelData(0);
   const mEnv = new Float32Array(numBins);
   const vEnv = new Float32Array(numBins);
@@ -986,7 +1232,7 @@ export function estimateVoiceSyncOffsetMs(musicBuffer, voiceBuffer, fallbackRoun
     let vSum = 0;
     const base = b * binSamples;
     for (let i = 0; i < binSamples; i++) {
-      mSum += Math.abs(mData[base + i]);
+      mSum += Math.abs(readMusic ? readMusic(base + i) : mData[base + i]);
       vSum += Math.abs(vData[base + i]);
     }
     mEnv[b] = mSum / binSamples;
@@ -1060,6 +1306,19 @@ function scheduleSyncedVoiceSource(ctx, voiceBuffer, destNode, startAtAudioTime,
   return vSrc;
 }
 
+function scheduleBackingSource(ctx, session, destNode, startAt, offset, playDur) {
+  const { backingBuffer, backingStartSec } = session;
+  if (!backingBuffer) return null;
+  const readAt = offset + backingStartSec;
+  const duration = Math.min(playDur, backingBuffer.duration - readAt);
+  if (duration <= 0) return null;
+  const source = ctx.createBufferSource();
+  source.buffer = backingBuffer;
+  source.connect(destNode);
+  source.start(startAt, readAt, duration);
+  return source;
+}
+
 function getTrimBounds({ durationSec, sampleRate }, settings) {
   const minDuration = 1 / sampleRate;
   const start = Math.max(0, Math.min(durationSec - minDuration, settings.trimStartSec || 0));
@@ -1068,7 +1327,7 @@ function getTrimBounds({ durationSec, sampleRate }, settings) {
 }
 
 /**
- * Reproduce en tiempo real la mezcla de las 2 pistas recortadas (trimStart -> trimEnd)
+ * Reproduce en tiempo real la mezcla recortada (trimStart -> trimEnd)
  * con Volumen Música, Volumen Voz, Eco (0-3) y Chorus (0-3) modificables EN VIVO.
  */
 export function isDemoPreviewPlaying() {
@@ -1100,6 +1359,7 @@ function finishDemoPreview(replacementAt = null) {
   gain.linearRampToValueAtTime(0, stopAt);
   st.musicSrc.stop(stopAt);
   st.voiceSrc?.stop(stopAt);
+  st.backingSrc?.stop(stopAt);
   st.graph.stopLfos(stopAt);
   setTimeout(() => {
     st.graph.disconnect();
@@ -1124,7 +1384,7 @@ export function startDemoPreviewPlayback(settings, onProgress, onEnded, seekStar
 
   const output = ctx.createGain();
   output.connect(ctx.destination);
-  const graph = buildTwoTrackMixGraph(ctx, output, settings);
+  const graph = buildTwoTrackMixGraph(ctx, output, settings, currentSession.hasBackingTrack);
   const startAt = ctx.currentTime + 0.008;
   finishDemoPreview(startAt);
   output.gain.setValueAtTime(0, ctx.currentTime);
@@ -1135,6 +1395,7 @@ export function startDemoPreviewPlayback(settings, onProgress, onEnded, seekStar
   musicSrc.buffer = currentSession.musicBuffer;
   musicSrc.connect(graph.musicGain);
   musicSrc.start(startAt, startSec, playDur);
+  const backingSrc = scheduleBackingSource(ctx, currentSession, graph.backingGain, startAt, startSec, playDur);
 
   let voiceSrc = null;
   if (voice) {
@@ -1154,7 +1415,7 @@ export function startDemoPreviewPlayback(settings, onProgress, onEnded, seekStar
   const stopAt = startAt + playDur + tailSec;
 
   const localState = {
-    ctx, graph, output, musicSrc, voiceSrc, startAt, startSec, playDur, tailSec, rafId: null, onEnded
+    ctx, graph, output, musicSrc, voiceSrc, backingSrc, startAt, startSec, playDur, tailSec, rafId: null, onEnded
   };
   previewState = localState;
 
@@ -1197,12 +1458,13 @@ export async function renderFinalMixBuffer(settings) {
   fadeGain.gain.linearRampToValueAtTime(0.0001, trimmedDur + tailSec);
   fadeGain.connect(offCtx.destination);
 
-  const graph = buildTwoTrackMixGraph(offCtx, fadeGain, settings);
+  const graph = buildTwoTrackMixGraph(offCtx, fadeGain, settings, currentSession.hasBackingTrack);
 
   const mSrc = offCtx.createBufferSource();
   mSrc.buffer = currentSession.musicBuffer;
   mSrc.connect(graph.musicGain);
   mSrc.start(0, trimStart, trimmedDur);
+  scheduleBackingSource(offCtx, currentSession, graph.backingGain, 0, trimStart, trimmedDur);
 
   const voice = getStudioVoice(settings);
   if (voice) {

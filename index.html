@@ -349,7 +349,7 @@
           </button>
         </div>
 
-        <!-- BARRA DE LOOPER (4 LEDs de pulso + barra de progreso + REC / PLAY / BORRAR) -->
+        <!-- BARRA DE LOOPER (4 LEDs de pulso + barra de progreso + REC / PLAY / CARGAR / BORRAR) -->
         <div class="module-looper">
           <div class="looper-status-bar">
             <div class="beat-leds">
@@ -369,14 +369,19 @@
               <span class="led-dot" id="looper-rec-led"></span>
               <svg viewBox="0 0 24 24"><use href="#icon-rec"></use></svg>
             </button>
-            <button type="button" id="btn-looper-play" class="hw-btn looper-btn" aria-label="Reproducir o parar bucle" data-i18n-aria="deck.loopPlay">
+            <button type="button" id="btn-looper-play" class="hw-btn looper-btn" aria-label="Reproducir o parar looper" data-i18n-aria="deck.loopPlay">
               <span class="led-dot" id="looper-play-led"></span>
               <svg viewBox="0 0 24 24"><use href="#icon-play"></use></svg>
             </button>
-            <button type="button" id="btn-looper-clear" class="hw-btn looper-btn" aria-label="Borrar bucle" data-i18n-aria="deck.loopClear">
+            <button type="button" id="btn-looper-load" class="hw-btn looper-btn" aria-label="Cargar pista de audio" data-i18n-aria="deck.loopLoad" title="Cargar pista de audio">
+              <span class="led-dot" id="looper-load-led" aria-hidden="true"></span>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-folder"></use></svg>
+            </button>
+            <button type="button" id="btn-looper-clear" class="hw-btn looper-btn" aria-label="Borrar bucle y pista" data-i18n-aria="deck.loopClear">
               <svg viewBox="0 0 24 24"><use href="#icon-trash"></use></svg>
             </button>
           </div>
+          <input type="file" id="looper-audio-file-input" accept="audio/*,.mp3,.wav,.m4a,.ogg" hidden />
         </div>
       </section>
 
@@ -534,6 +539,11 @@
               <span id="config-camera-status">OFF</span><span id="config-camera-led" class="led-dot" aria-hidden="true"></span>
             </button>
             <p id="config-camera-description" data-i18n="config.cameraDescription">Graba con la cámara frontal al capturar una maqueta para incluirte en el vídeo corto 9:16.</p>
+            <label class="config-backing-row">
+              <span data-i18n="config.backingVolume">Volumen de pista cargada</span>
+              <input type="range" id="config-backing-vol" min="0" max="150" value="90" />
+              <span id="config-backing-vol-val" class="slider-val">90%</span>
+            </label>
           </section>
           <section class="settings-block">
             <div class="settings-heading"><h2><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-help"></use></svg><span data-i18n="help.complete">Tutorial y ayuda completa</span></h2></div>
@@ -694,14 +704,14 @@
     </div>
 
     <!-- =======================================================
-         MODAL ESTUDIO DE MAQUETA (2 PISTAS: MÚSICA + VOZ, FX Y RECORTE)
+         MODAL ESTUDIO DE MAQUETA
          ======================================================= -->
     <div id="modal-demo-result" class="hw-modal-backdrop" hidden>
       <div class="hw-modal-card demo-studio-card" role="dialog" aria-modal="true" aria-labelledby="modal-demo-title">
         <div class="modal-header">
           <div class="modal-title" id="modal-demo-title">
             <svg viewBox="0 0 24 24" style="stroke:var(--led-ruby-bright);"><use href="#icon-mic"></use></svg>
-            <span data-i18n="studio.title">ESTUDIO DE MAQUETA (2 PISTAS)</span>
+            <span data-i18n="studio.title">ESTUDIO DE MAQUETA</span>
           </div>
           <button type="button" id="btn-close-demo-result" class="modal-close-btn" aria-label="Cerrar" data-i18n-aria="common.close">✕</button>
         </div>
@@ -709,7 +719,7 @@
         <div class="demo-studio-body">
           <div id="demo-result-warning" class="demo-result-warning" hidden></div>
 
-          <!-- Forma de onda de 2 pistas (Verde = Música, Ámbar = Voz) + Recorte -->
+          <!-- Forma de onda y recorte -->
           <div class="studio-wave-box">
             <div class="studio-wave-header">
               <span class="wave-legend">
@@ -737,7 +747,6 @@
             </div>
           </div>
 
-          <!-- Mezclador de 2 Pistas (Volumen Música + Volumen Voz) -->
           <div class="studio-mixer-box">
             <label class="mixer-row">
               <span class="mixer-label is-music" data-i18n="studio.music">MÚSICA</span>
@@ -748,6 +757,11 @@
               <span class="mixer-label is-voice" data-i18n="studio.voice">VOZ</span>
               <input type="range" id="mix-voice-vol" min="0" max="180" value="115" />
               <span id="mix-voice-val" class="slider-val">115%</span>
+            </label>
+            <label class="mixer-row" id="mix-backing-row" hidden>
+              <span class="mixer-label is-backing" data-i18n="studio.backing">BASE</span>
+              <input type="range" id="mix-backing-vol" min="0" max="150" value="90" />
+              <span id="mix-backing-val" class="slider-val">90%</span>
             </label>
             <div class="sync-row" id="mix-sync-row">
               <span class="mixer-label is-sync" data-i18n="studio.sync" data-i18n-title="studio.syncTitle">SINCRO</span>

@@ -36,7 +36,8 @@ export const HELP_CONTENT = {
       title: 'Looper y canciones guardadas',
       topics: [
         ['Precuenta 1-2-3-4', 'Pulsa REC y espera los cuatro pulsos rojos. Durante la marcha, el primer pulso es ámbar y los tres siguientes esmeralda. El contador B indica los compases y la barra OLED muestra la posición dentro del bucle.'],
-        ['Reproducir y borrar', 'El botón ▶/■ reproduce o para el bucle. El LED esmeralda indica reproducción. La papelera borra el bucle.'],
+        ['Reproducir y borrar', 'El botón ▶/■ reproduce o para el bucle y la pista cargada. Si hay ambos, arrancan juntos. El LED esmeralda indica reproducción. La papelera borra el bucle y la pista.'],
+        ['Cargar una pista y recuperar el tempo', 'Pulsa la carpeta del looper y elige un MP3 u otro archivo de audio. El LED cian confirma la carga. Si el nombre contiene una etiqueta como T120, ÓRBITA ajusta el tempo a 120 BPM. Las exportaciones de audio y vídeo incluyen esa etiqueta.'],
         ['Sesiones con bucle', 'Abre la carpeta, escribe un nombre y guarda. La indicación «Bucle 4B», por ejemplo, confirma que se incluirá un bucle de cuatro compases. Las canciones quedan en este navegador y se pueden abrir, renombrar o borrar.']
       ]
     },
@@ -44,6 +45,7 @@ export const HELP_CONTENT = {
       title: 'Estudio de Maqueta y filtro de voz',
       topics: [
         ['Grabar y mezclar', 'Pulsa el micrófono de la barra superior. La música se detiene durante la precuenta de cuatro tiempos (1-2-3-4) y vuelve a sonar en el tiempo 1, justo al empezar la grabación. Pulsa durante la precuenta para cancelar. Cuando el LED se ponga rojo, pulsa de nuevo para terminar y abrir el estudio con las pistas de música y voz.'],
+        ['Grabar capa sobre capa', 'Carga una pista en el looper y pulsa el micrófono. La pista arranca desde el principio en el tiempo 1 después de la precuenta, lista para que toques o cantes encima. Exporta la mezcla y cárgala de nuevo para grabar otra capa.'],
         ['Filtro de voz a posteriori', 'El micrófono conserva la toma cruda. En el Estudio de Maqueta, pulsa FILTRO VOZ para pasar de 0 a 3 LEDs esmeralda. Con 0 oyes la toma cruda. Los niveles 1, 2 y 3 reducen cada vez más el ruido y el sangrado de altavoz en las pausas. La onda ámbar refleja el ajuste y el filtro se aplica a la escucha, al MP3 y al vídeo.'],
         ['Saltar en la onda', 'Toca o haz clic en la onda para escuchar desde ese punto. Arrastra el cabezal blanco y suelta para saltar a otra posición dentro del recorte. La etiqueta del cabezal muestra el tiempo.'],
         ['Editar y exportar', 'Recorta inicio y final, ajusta los dos volúmenes y compensa el desfase de la voz con SINCRO. El eco usa LED cian y el chorus, violetas. Escucha la mezcla y expórtala o compártela como MP3.']
@@ -94,7 +96,8 @@ export const HELP_CONTENT = {
       title: 'Looper and saved songs',
       topics: [
         ['1-2-3-4 count-in', 'Press REC and wait for four red beats. During playback, beat one is amber and the next three are emerald. The B counter shows the number of bars and the OLED bar shows the current loop position.'],
-        ['Playback and clearing', 'The ▶/■ button plays or stops the loop. The emerald LED indicates playback. Use the trash button to clear the loop.'],
+        ['Playback and clearing', 'The ▶/■ button plays or stops the loop and the loaded track. When both are present, they start together. The emerald LED indicates playback. The trash button clears both the loop and the track.'],
+        ['Load a track and restore its tempo', 'Press the folder on the looper and choose an MP3 or another audio file. The cyan LED confirms the track is loaded. A filename tag such as T120 sets the tempo to 120 BPM. Audio and video exports include this tag.'],
         ['Sessions with loops', 'Open the folder, enter a name and save. A label such as “4B loop” confirms that a four-bar loop will be included. Songs stay in this browser and can be opened, renamed or deleted.']
       ]
     },
@@ -102,6 +105,7 @@ export const HELP_CONTENT = {
       title: 'Demo Studio and voice filter',
       topics: [
         ['Record and mix', 'Press the microphone button in the top bar. The music stops during the four-beat count-in (1-2-3-4) and restarts on beat 1 as recording begins. Press during the count-in to cancel. Once the LED turns red, press again to finish and open the studio with the music and vocal tracks.'],
+        ['Overdub layer by layer', 'Load a track into the looper and press the microphone button. The track starts from the beginning on beat 1 after the count-in so you can play or sing over it. Export the mix and load it again to add another layer.'],
         ['Voice filter after recording', 'The microphone preserves the raw take. In the Demo Studio, press VOICE FILTER to cycle from 0 to 3 emerald LEDs. Level 0 plays the raw take. Levels 1, 2 and 3 increasingly reduce noise and speaker bleed during pauses. The amber waveform reflects the setting, which applies to preview, MP3 and video.'],
         ['Seek on the waveform', 'Tap or click the waveform to play from that point. Drag the white playhead and release to jump to another position within the trim. The playhead label shows the time.'],
         ['Edit and export', 'Trim the start and end, set both volumes and use SYNC to align the vocals. Echo uses cyan LEDs and chorus uses violet. Preview the mix and export or share it as an MP3.']

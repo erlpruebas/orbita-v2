@@ -3,8 +3,8 @@
  * y Looper Cuantizado con Precuenta 1-2-3-4 y Cero Desfase (REGLAS_NO_ROMPER.md #2).
  */
 
-import { ensureAudioUnlocked, getDrumDestination, triggerMetronomeClick } from './audio-core.js';
-import { getState, setState } from './state.js';
+import { ensureAudioUnlocked, getBackingTrackDestination, getDrumDestination, triggerMetronomeClick } from './audio-core.js';
+import { getState, setState, subscribe } from './state.js';
 import { getActiveDrumPattern, triggerDrumPatternStep } from './drum-engine.js';
 import { getPresetById, startHumanizedVoiceGroup } from './synth-presets.js';
 import { onMasterClockStep, setAccompanimentHooks } from './accompaniment.js';
@@ -41,6 +41,12 @@ let activePendingRecords = new Map(); // voiceKey -> { offsetSec, startTime, not
 let activeLooperVoices = new Set();
 let loopDurationSec = 0;
 
+let loadedTrackBuffer = null;
+let backingTrackSource = null;
+let backingTrackStartTime = 0;
+let backingTrackLoadId = 0;
+let backingMetronomeTimer = null;
+
 // Telemetría de diagnóstico (?debug=1)
 let lastLooperDeltaMs = 0;
 let lastCatchUpDeltaMs = 0;
@@ -74,6 +80,10 @@ setAccompanimentHooks({
   }
 });
 
+subscribe((_, keys) => {
+  if (keys.includes('metronomeEnabled') || keys.includes('bpm')) refreshBackingTrackMetronome();
+});
+
 function getBeatDurSec() {
   const bpm = getState().bpm || 92;
   return 60 / bpm;
@@ -104,7 +114,8 @@ export function getArmedTransportSnapshot() {
   return {
     drumPlaying: Boolean(st.drumPlaying),
     looperPlaying: st.looperState === 'playing',
-    progressionPlaying: Boolean(st.progressionPlaying)
+    progressionPlaying: Boolean(st.progressionPlaying),
+    backingTrackArmed: hasLoadedBackingTrack()
   };
 }
 
@@ -112,11 +123,14 @@ export function startArmedTransportAt(originAudioTime, armed) {
   const drumPlaying = Boolean(armed.drumPlaying);
   const looperPlaying = armed.looperPlaying && loopEvents.length > 0 && loopDurationSec > 0;
   const progressionPlaying = Boolean(armed.progressionPlaying && getState().progressionIndex >= 0);
-  if (!drumPlaying && !looperPlaying && !progressionPlaying) return;
-
-  if (looperPlaying) resetLooperTriggers();
-  setState({ drumPlaying, looperState: looperPlaying ? 'playing' : 'idle', progressionPlaying });
-  startTransportAt(originAudioTime);
+  if (drumPlaying || looperPlaying || progressionPlaying) {
+    if (looperPlaying) resetLooperTriggers();
+    setState({ drumPlaying, looperState: looperPlaying ? 'playing' : 'idle', progressionPlaying });
+    startTransportAt(originAudioTime);
+  }
+  const backingBuffer = armed.backingTrackArmed ? getLoadedBackingTrackBuffer() : null;
+  if (backingBuffer) startBackingTrackAt(originAudioTime);
+  return backingBuffer;
 }
 
 /**
@@ -130,6 +144,7 @@ function evaluateTransportLifecycle() {
 
   if (!shouldRun && !countInActive) {
     stopTransportInternal();
+    refreshBackingTrackMetronome();
   } else if (shouldRun && !running && !countInActive) {
     startTransportAt(ensureAudioUnlocked().currentTime + 0.01);
   }
@@ -137,6 +152,7 @@ function evaluateTransportLifecycle() {
 }
 
 function startTransportAt(originAudioTime) {
+  stopBackingTrackMetronome();
   stopSchedulerOnly();
   if (running) {
     stopScheduledMetronomeClicks();
@@ -160,13 +176,10 @@ function stopSchedulerOnly() {
     clearInterval(schedulerTimer);
     schedulerTimer = null;
   }
-  if (rafId) {
-    cancelAnimationFrame(rafId);
-    rafId = null;
-  }
 }
 
 function stopTransportInternal() {
+  stopBackingTrackMetronome();
   stopSchedulerOnly();
   clearCountInTimers();
   running = false;
@@ -177,7 +190,11 @@ function stopTransportInternal() {
   stopAllLooperVoices();
   stopProgressionPlaybackEngine();
   setState({ currentBeat: -1, currentStep: 0 });
-  updateLoopProgressUI(0);
+  if (!backingTrackSource) {
+    if (rafId !== null) cancelAnimationFrame(rafId);
+    rafId = null;
+    updateLoopProgressUI(0);
+  }
 }
 
 function clearCountInTimers() {
@@ -197,6 +214,36 @@ function scheduleMetronomeClick(when, isDownbeat) {
 function stopScheduledMetronomeClicks() {
   for (const click of scheduledMetronomeClicks) click.stop();
   scheduledMetronomeClicks.clear();
+}
+
+// El metrónomo de una pista sola es opcional y no arranca el reloj de los instrumentos.
+function refreshBackingTrackMetronome() {
+  stopBackingTrackMetronome();
+  const st = getState();
+  if (!backingTrackSource || running || countInActive || !st.metronomeEnabled) return;
+
+  const ctx = ensureAudioUnlocked();
+  const beatDur = getBeatDurSec();
+  const endTime = backingTrackStartTime + st.loadedTrackDuration;
+  let nextBeat = 0;
+  const tick = () => {
+    const now = ctx.currentTime;
+    nextBeat = Math.max(nextBeat, Math.ceil((now - backingTrackStartTime) / beatDur));
+    let when = backingTrackStartTime + nextBeat * beatDur;
+    while (when < endTime && when <= now + SCHEDULE_AHEAD_SEC) {
+      scheduleMetronomeClick(when, nextBeat % 4 === 0);
+      when = backingTrackStartTime + ++nextBeat * beatDur;
+    }
+  };
+  tick();
+  backingMetronomeTimer = setInterval(tick, LOOKAHEAD_INTERVAL_MS);
+}
+
+function stopBackingTrackMetronome() {
+  if (backingMetronomeTimer === null) return;
+  clearInterval(backingMetronomeTimer);
+  backingMetronomeTimer = null;
+  stopScheduledMetronomeClicks();
 }
 
 function stopTransportDrums() {
@@ -307,16 +354,17 @@ function updateLoopProgressUI(ratio01, isRec = false) {
 }
 
 function startVisualLoop() {
-  if (typeof requestAnimationFrame === 'undefined') return;
-  if (rafId) cancelAnimationFrame(rafId);
+  if (typeof requestAnimationFrame === 'undefined' || rafId !== null) return;
 
   const tickUI = () => {
-    if (!running && !countInActive) return;
+    rafId = null;
+    if (!running && !countInActive && !backingTrackSource) return;
     const ctx = ensureAudioUnlocked();
     const now = ctx.currentTime;
     const st = getState();
     const beatDur = getBeatDurSec();
     const barDur = beatDur * 4;
+    let progress = 0;
 
     if (running && now >= transportOriginTime) {
       const elapsed = now - transportOriginTime;
@@ -328,24 +376,108 @@ function startVisualLoop() {
       if (st.looperState === 'recording' && !isOverdubbing) {
         const recElapsed = Math.max(0, now - recordStartTime);
         const currentBars = Math.max(1, Math.ceil(recElapsed / barDur));
-        const barProgress = (recElapsed % barDur) / barDur;
-        updateLoopProgressUI(barProgress, true);
+        progress = (recElapsed % barDur) / barDur;
         if (st.loopBars !== currentBars) {
           setState({ loopBars: currentBars });
         }
       } else if ((st.looperState === 'playing' || isOverdubbing) && loopDurationSec > 0) {
-        const loopPhase = (elapsed % loopDurationSec) / loopDurationSec;
-        updateLoopProgressUI(loopPhase, st.looperState === 'recording');
+        progress = (elapsed % loopDurationSec) / loopDurationSec;
       } else {
-        const barPhase = (elapsed % barDur) / barDur;
-        updateLoopProgressUI(barPhase, false);
+        progress = (elapsed % barDur) / barDur;
       }
+    }
+
+    if (backingTrackSource) {
+      updateLoopProgressUI((now - backingTrackStartTime) / st.loadedTrackDuration);
+    } else if (running && now >= transportOriginTime) {
+      updateLoopProgressUI(progress, st.looperState === 'recording');
     }
 
     rafId = requestAnimationFrame(tickUI);
   };
 
   rafId = requestAnimationFrame(tickUI);
+}
+
+export function extractTempoFromFilename(filename) {
+  const match = /(?:^|[^a-zA-Z0-9])T(\d{2,3})(?=$|[^0-9])/i.exec(filename);
+  if (!match) return null;
+  const bpm = Number(match[1]);
+  return bpm >= 40 && bpm <= 220 ? bpm : null;
+}
+
+export function hasLoadedBackingTrack() {
+  return loadedTrackBuffer !== null;
+}
+
+export function getLoadedBackingTrackBuffer() {
+  return loadedTrackBuffer;
+}
+
+export async function loadLooperAudioFile(file) {
+  const loadId = ++backingTrackLoadId;
+  const ctx = ensureAudioUnlocked();
+  let buffer;
+  try {
+    buffer = await ctx.decodeAudioData(await file.arrayBuffer());
+  } catch (error) {
+    if (loadId !== backingTrackLoadId) return { ok: false };
+    throw error;
+  }
+  if (loadId !== backingTrackLoadId) return { ok: false };
+  return loadLooperAudioBuffer(buffer, file.name);
+}
+
+export function loadLooperAudioBuffer(audioBuffer, filename) {
+  const { duration } = audioBuffer;
+  if (!Number.isFinite(duration) || duration <= 0) throw new Error('Empty backing track');
+  backingTrackLoadId++;
+  stopBackingTrack();
+  loadedTrackBuffer = audioBuffer;
+  const detectedBpm = extractTempoFromFilename(filename);
+  if (detectedBpm !== null) onBpmChanged(detectedBpm);
+  setState({ loadedTrackName: filename, loadedTrackDuration: duration, backingTrackPlaying: false });
+  evaluateTransportLifecycle();
+  return { ok: true, name: filename, duration, detectedBpm };
+}
+
+export function clearLoadedBackingTrack() {
+  backingTrackLoadId++;
+  stopBackingTrack();
+  loadedTrackBuffer = null;
+  setState({ loadedTrackName: '', loadedTrackDuration: 0, backingTrackPlaying: false });
+  evaluateTransportLifecycle();
+}
+
+function startBackingTrackAt(when) {
+  stopBackingTrack();
+  const ctx = ensureAudioUnlocked();
+  const source = ctx.createBufferSource();
+  source.buffer = loadedTrackBuffer;
+  source.connect(getBackingTrackDestination());
+  source.onended = () => {
+    if (backingTrackSource !== source) return;
+    stopBackingTrack(true);
+    evaluateTransportLifecycle();
+  };
+  source.start(when, 0);
+  backingTrackSource = source;
+  backingTrackStartTime = when;
+  setState({ backingTrackPlaying: true });
+  refreshBackingTrackMetronome();
+  startVisualLoop();
+}
+
+function stopBackingTrack(ended = false) {
+  if (!backingTrackSource) return;
+  const source = backingTrackSource;
+  backingTrackSource = null;
+  stopBackingTrackMetronome();
+  source.onended = null;
+  if (!ended) source.stop();
+  source.disconnect();
+  updateLoopProgressUI(0);
+  setState({ backingTrackPlaying: false });
 }
 
 /**
@@ -422,7 +554,7 @@ export function pressLooperRec() {
 
   // Caso 2: Si está grabando -> Cerrar grabación cuantizada al compás y pasar a PLAY continuo
   if (st.looperState === 'recording') {
-    finishLooperRecordingAndPlay();
+    finishLooperRecording();
     return;
   }
 
@@ -489,9 +621,10 @@ export function pressLooperRec() {
 /**
  * Cierra la grabación cuantizando al número de compases más cercano (1, 2, 4 u 8)
  */
-function finishLooperRecordingAndPlay() {
+function finishLooperRecording(play = true) {
   const ctx = ensureAudioUnlocked();
   const now = ctx.currentTime;
+  const looperState = play ? 'playing' : 'idle';
 
   // Cerrar cualquier nota que el usuario aún mantenga pulsada al cerrar el bucle
   for (const key of Array.from(activePendingRecords.keys())) {
@@ -501,7 +634,7 @@ function finishLooperRecordingAndPlay() {
   if (isOverdubbing && loopDurationSec > 0) {
     isOverdubbing = false;
     loopEvents.forEach(ev => { ev.recordedAtAudioTime = 0; });
-    setState({ looperState: 'playing' });
+    setState({ looperState });
     return;
   }
 
@@ -532,39 +665,42 @@ function finishLooperRecordingAndPlay() {
 
   isOverdubbing = false;
   setState({
-    looperState: 'playing',
+    looperState,
     loopBars: quantizedBars
   });
 
   // Reiniciar el origen de fase del bucle exactamente en el cierre cuantizado para reproducción inmediata sin hueco
-  startTransportAt(ctx.currentTime + 0.005);
+  if (play) startTransportAt(ctx.currentTime + 0.005);
 }
 
 export function pressLooperPlayStop() {
   const ctx = ensureAudioUnlocked();
   const st = getState();
 
-  if (st.looperState === 'recording') {
-    finishLooperRecordingAndPlay();
-    return;
-  }
-
-  if (st.looperState === 'playing') {
-    // Detener reproducción del looper pero conservar el bucle grabado
+  if (st.backingTrackPlaying || st.looperState === 'playing') {
+    stopBackingTrack();
+    if (st.looperState === 'recording') finishLooperRecording(false);
     stopAllLooperVoices();
-    setState({ looperState: 'idle' });
+    if (st.looperState === 'playing') setState({ looperState: 'idle' });
     evaluateTransportLifecycle();
     return;
   }
 
-  // Si está en idle y hay un bucle grabado, reproducirlo desde el principio
-  if (st.looperState === 'idle' && loopDurationSec > 0 && loopEvents.length > 0) {
+  if (st.looperState === 'recording') {
+    finishLooperRecording();
+    return;
+  }
+
+  if (st.looperState !== 'idle') return;
+  const playLoop = loopDurationSec > 0 && loopEvents.length > 0;
+  const playBackingTrack = hasLoadedBackingTrack();
+  const t0 = ctx.currentTime + 0.01;
+  if (playLoop) {
     resetLooperTriggers();
     setState({ looperState: 'playing' });
-    if (!running) {
-      startTransportAt(ctx.currentTime + 0.01);
-    }
   }
+  if (playLoop && (!running || playBackingTrack)) startTransportAt(t0);
+  if (playBackingTrack) startBackingTrackAt(t0);
 }
 
 function resetLooperTriggers() {
@@ -592,6 +728,7 @@ function replaceLooperContent(events, duration, loopBars) {
 }
 
 export function pressLooperClear() {
+  clearLoadedBackingTrack();
   replaceLooperContent([], 0, 0);
 }
 
@@ -618,7 +755,7 @@ export function importLooperSnapshot(snapshot) {
       ![1, 2, 4, 8].includes(snapshot.loopBars) ||
       !Number.isFinite(snapshot.bpm) || snapshot.bpm < 40 || snapshot.bpm > 220 ||
       !Number.isFinite(snapshot.loopDurationSec) || snapshot.loopDurationSec <= 0) {
-    pressLooperClear();
+    replaceLooperContent([], 0, 0);
     return;
   }
 
@@ -646,7 +783,7 @@ export function importLooperSnapshot(snapshot) {
   }
 
   if (events.length === 0) {
-    pressLooperClear();
+    replaceLooperContent([], 0, 0);
     return;
   }
   replaceLooperContent(events, snapshot.loopDurationSec * scale, snapshot.loopBars);
@@ -657,6 +794,7 @@ export function importLooperSnapshot(snapshot) {
  * para que el usuario pueda escucharla en silencio.
  */
 export function stopAllTransportForPlayback() {
+  stopBackingTrack();
   stopLooperActivity();
   setState({ drumPlaying: false, progressionPlaying: false, looperState: 'idle' });
   evaluateTransportLifecycle();

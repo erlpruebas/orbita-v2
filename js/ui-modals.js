@@ -2,7 +2,7 @@
  * ui-modals.js — Banco, configuración, sesiones, Clave de Sol y Estudio de Maqueta.
  */
 
-import { ensureAudioUnlocked } from './audio-core.js';
+import { ensureAudioUnlocked, setBackingTrackVolume } from './audio-core.js';
 import { INTERVAL_LABELS, SHORT_INTERVAL_LABELS, resolveLang, t } from './i18n.js';
 import { getState, setState, subscribe } from './state.js';
 import { CUSTOM_SCALE_PRESETS, getDiatonicDegrees, getNoteNameTitle, getNoteNameUpper, ROMAN_DEGREES } from './theory.js';
@@ -79,10 +79,11 @@ let generatedVideo = null;
 let videoStyleId = VIDEO_STYLES[0];
 let waveformPointerId = null;
 
-// Estado del Estudio de Maqueta (2 pistas)
+// Estado del Estudio de Maqueta
 const studioMix = {
   musicVol: 0.90,
   voiceVol: 1.15,
+  backingVol: 0.90,
   voiceEcho: 0,      // 0..3 LEDs cian
   voiceChorus: 0,    // 0..3 LEDs violeta
   voiceFilter: 0,
@@ -244,6 +245,9 @@ function renderSettings(st) {
   camera.title = translate(st.cameraEnabled ? 'config.camera.on' : 'config.camera.off');
   document.getElementById('config-camera-status').textContent = st.cameraEnabled ? 'ON' : 'OFF';
   document.getElementById('config-camera-led').classList.toggle('on-emerald', st.cameraEnabled);
+  const backingPercent = Math.round(st.backingTrackVol * 100);
+  document.getElementById('config-backing-vol').value = String(backingPercent);
+  document.getElementById('config-backing-vol-val').textContent = `${backingPercent}%`;
 
   const help = document.getElementById('help-accordion');
   if (help.dataset.renderedLang !== lang) {
@@ -416,15 +420,19 @@ function openConfigModalToTab(tabName) {
 
 let sessionFeedbackTimer;
 
-function showSessionFeedback(key, name, toast = false) {
+function showSessionFeedback(key, vars, toast = false) {
   clearTimeout(sessionFeedbackTimer);
   const chassisToast = document.getElementById('session-toast');
   const modalFeedback = document.getElementById('sessions-feedback');
   const [element, other] = toast ? [chassisToast, modalFeedback] : [modalFeedback, chassisToast];
   other.hidden = true;
-  element.textContent = translate(key, { name });
+  element.textContent = translate(key, vars);
   element.hidden = false;
   sessionFeedbackTimer = setTimeout(() => { element.hidden = true; }, 2600);
+}
+
+export function showSessionToast(key, vars) {
+  showSessionFeedback(key, vars, true);
 }
 
 function renderSessionLoopPill() {
@@ -519,7 +527,7 @@ function renderSessionsList() {
         const loaded = loadSession(session.id);
         if (!loaded) throw new Error('Session unavailable');
         closeSessions();
-        showSessionFeedback('sessions.loaded', loaded.name, true);
+        showSessionToast('sessions.loaded', { name: loaded.name });
       } catch (_) {
         showSessionFeedback('sessions.storageError');
       }
@@ -557,7 +565,7 @@ function initSessionsModal() {
       if (!saved) throw new Error('Session unavailable');
       input.value = '';
       renderSessionsList();
-      showSessionFeedback('sessions.saved', saved.name);
+      showSessionFeedback('sessions.saved', { name: saved.name });
     } catch (_) {
       showSessionFeedback('sessions.storageError');
     }
@@ -644,7 +652,7 @@ function updateTonalityModalDOM(snapshot) {
 
 /**
  * =====================================================================
- * SERVICIO 3: ESTUDIO DE MAQUETA (2 PISTAS: MÚSICA + VOZ, FX Y RECORTE)
+ * SERVICIO 3: ESTUDIO DE MAQUETA
  * =====================================================================
  */
 function drawTwoTrackWaveform() {
@@ -677,6 +685,14 @@ function drawTwoTrackWaveform() {
     const val = Math.min(1, session.musicPeaks[i] * 1.4);
     const barH = Math.max(1.5, val * (h * 0.44));
     ctx2d.fillRect(i * barW, h / 2 - barH, Math.max(1, barW - 0.6), barH);
+  }
+
+  if (session.backingPeaks) {
+    ctx2d.fillStyle = 'rgba(34, 211, 238, 0.85)';
+    for (let i = 0; i < bins; i++) {
+      const val = Math.min(1, session.backingPeaks[i] * studioMix.backingVol * 1.4);
+      if (val > 0) ctx2d.fillRect(i * barW, h / 2 - val * (h * 0.44), Math.max(1, barW - 0.6), 1.5);
+    }
   }
 
   // Pista 2: Voz (mitad inferior / ámbar), desplazada visualmente según `voiceOffsetMs`
@@ -762,10 +778,12 @@ function updateStudioControlsDOM() {
 
   const mVal = document.getElementById('mix-music-val');
   const vVal = document.getElementById('mix-voice-val');
+  const bVal = document.getElementById('mix-backing-val');
   const syncVal = document.getElementById('mix-sync-val');
   const syncSlider = document.getElementById('mix-voice-sync');
   if (mVal) mVal.textContent = `${Math.round(studioMix.musicVol * 100)}%`;
   if (vVal) vVal.textContent = `${Math.round(studioMix.voiceVol * 100)}%`;
+  if (bVal) bVal.textContent = `${Math.round(studioMix.backingVol * 100)}%`;
   if (syncVal) {
     const ms = Math.round(studioMix.voiceOffsetMs || 0);
     syncVal.textContent = `${ms > 0 ? '+' : ''}${ms}ms`;
@@ -1004,6 +1022,7 @@ function openDemoStudioModal(session) {
   // Inicializar parámetros del estudio usando la compensación de latencia medida o la calibración guardada
   studioMix.musicVol = 0.90;
   studioMix.voiceVol = 1.15;
+  studioMix.backingVol = 0.90;
   studioMix.voiceEcho = 0;
   studioMix.voiceChorus = 0;
   studioMix.voiceFilter = 0;
@@ -1018,6 +1037,8 @@ function openDemoStudioModal(session) {
   if (endRange) endRange.value = '1000';
   if (musicSlider) musicSlider.value = '90';
   if (voiceSlider) voiceSlider.value = '115';
+  document.getElementById('mix-backing-vol').value = '90';
+  document.getElementById('mix-backing-row').hidden = !session.hasBackingTrack;
 
   if (voiceRow) voiceRow.classList.toggle('is-disabled', !session.hasVoiceTrack);
   if (syncRow) syncRow.classList.toggle('is-disabled', !session.hasVoiceTrack);
@@ -1065,6 +1086,10 @@ export function initModalsUI() {
   }
   document.getElementById('btn-config-camera')?.addEventListener('click', () => {
     setState({ cameraEnabled: !getState().cameraEnabled });
+  });
+  document.getElementById('config-backing-vol').addEventListener('input', ({ target }) => {
+    setBackingTrackVolume(Number(target.value) / 100);
+    document.getElementById('config-backing-vol-val').textContent = `${target.value}%`;
   });
   document.getElementById('btn-activate-custom-mode').addEventListener('click', () => setState({ scaleMode: 'custom' }));
   const settings = document.getElementById('config-settings');
@@ -1144,7 +1169,7 @@ export function initModalsUI() {
     keyEl.addEventListener('pointercancel', endRef);
   });
 
-  // --- SERVICIO 3: GRABADOR Y ESTUDIO DE MAQUETA (2 PISTAS) ---
+  // --- SERVICIO 3: GRABADOR Y ESTUDIO DE MAQUETA ---
   const btnDemoRec = document.getElementById('btn-demo-rec');
   const ledDemoRec = document.getElementById('demo-rec-led');
   const timerDemoRec = document.getElementById('demo-rec-timer');
@@ -1219,7 +1244,7 @@ export function initModalsUI() {
     updateStudioControlsDOM();
   });
 
-  // Sliders de Volumen Música y Volumen Voz (actualización EN VIVO)
+  // Faders del mezclador (actualización en vivo)
   document.getElementById('mix-music-vol')?.addEventListener('input', (e) => {
     studioMix.musicVol = Number(e.target.value) / 100;
     updateStudioControlsDOM();
@@ -1228,6 +1253,12 @@ export function initModalsUI() {
 
   document.getElementById('mix-voice-vol')?.addEventListener('input', (e) => {
     studioMix.voiceVol = Number(e.target.value) / 100;
+    updateStudioControlsDOM();
+    updateLivePreviewMix(studioMix);
+  });
+
+  document.getElementById('mix-backing-vol').addEventListener('input', ({ target }) => {
+    studioMix.backingVol = Number(target.value) / 100;
     updateStudioControlsDOM();
     updateLivePreviewMix(studioMix);
   });
@@ -1278,6 +1309,7 @@ export function initModalsUI() {
 
   document.getElementById('btn-voice-filter').addEventListener('click', () => {
     studioMix.voiceFilter = (studioMix.voiceFilter + 1) % 4;
+    updateLivePreviewMix(studioMix);
     updateStudioControlsDOM();
     const position = getCurrentPreviewPositionSec();
     if (position !== null) playStudioMix(position);

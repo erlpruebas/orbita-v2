@@ -810,7 +810,7 @@ html, body {
 
 .looper-controls {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 6px;
   height: 32px;
 }
@@ -849,7 +849,6 @@ html, body {
   .mini-screen { height: 20px; }
   .col-arrows-3 { grid-template-rows: 17px 1fr 1fr; }
   .module-looper { padding: 4px; gap: 4px; }
-  .looper-controls { height: 24px; }
 }
 
 @keyframes pulse-countin {

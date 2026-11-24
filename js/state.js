@@ -50,6 +50,10 @@ const DEFAULT_STATE = {
   // Looper
   looperState: 'idle',   // 'idle' | 'countin' | 'recording' | 'playing'
   loopBars: 0,           // 0, 1, 2, 4, 8
+  loadedTrackName: '',
+  loadedTrackDuration: 0,
+  backingTrackVol: 0.90,
+  backingTrackPlaying: false,
   currentBeat: -1,       // -1 en reposo, 0..3 en marcha
   currentStep: 0         // 0..15
 };
@@ -60,6 +64,7 @@ const v2ConfigValidators = {
   lang: value => ['auto', 'es', 'en'].includes(value),
   notation: value => ['solfege', 'letter'].includes(value),
   micFilterLevel: value => [0, 1, 2, 3].includes(value),
+  backingTrackVol: value => Number.isFinite(value) && value >= 0 && value <= 1.5,
   cameraEnabled: value => typeof value === 'boolean',
   progressionIndex: value => Number.isInteger(value) && value >= -1 && value <= 15,
   tutorialDone: value => typeof value === 'boolean'
@@ -158,6 +163,7 @@ function persistConfig() {
       lang: state.lang,
       notation: state.notation,
       micFilterLevel: state.micFilterLevel,
+      backingTrackVol: state.backingTrackVol,
       cameraEnabled: state.cameraEnabled,
       progressionIndex: state.progressionIndex,
       tutorialDone: state.tutorialDone,
