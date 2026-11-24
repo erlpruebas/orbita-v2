@@ -528,13 +528,6 @@
           </section>
           <section class="settings-block">
             <div class="settings-heading"><h2><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-mic"></use></svg><span data-i18n="config.studio">Estudio de Maqueta</span></h2></div>
-            <button type="button" id="btn-config-mic-filter" class="hw-btn settings-btn settings-device-btn" aria-describedby="config-mic-filter-level">
-              <span data-i18n="config.micFilter">Filtro del micrófono</span>
-              <span class="led-strip-3" aria-hidden="true">
-                <span id="mic-filter-led-1" class="led-dot"></span><span id="mic-filter-led-2" class="led-dot"></span><span id="mic-filter-led-3" class="led-dot"></span>
-              </span>
-            </button>
-            <p id="config-mic-filter-level" aria-live="polite"></p>
             <button type="button" id="btn-config-camera" class="hw-btn settings-btn settings-device-btn" aria-pressed="false" aria-describedby="config-camera-description">
               <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-camera"></use></svg>
               <span data-i18n="config.camera">Cámara frontal</span>
@@ -725,7 +718,10 @@
               </span>
               <span id="studio-trim-readout" class="studio-trim-readout">0:00.0 — 0:00.0</span>
             </div>
-            <canvas id="demo-waveform-canvas" class="demo-waveform-canvas" width="520" height="84"></canvas>
+            <canvas id="demo-waveform-canvas" class="demo-waveform-canvas" width="520" height="84"
+              tabindex="0" role="slider" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0"
+              aria-label="Posición en la mezcla" data-i18n-aria="studio.seek" aria-describedby="studio-wave-hint"></canvas>
+            <p id="studio-wave-hint" class="studio-wave-hint" data-i18n="studio.seekHint">Toca la onda para saltar a cualquier punto.</p>
 
             <div class="trim-sliders-grid">
               <label class="trim-slider-row">
@@ -765,7 +761,6 @@
             </div>
           </div>
 
-          <!-- Efectos dedicados para la Voz: Eco (0-3 LEDs) y Chorus (0-3 LEDs) -->
           <div class="studio-fx-grid">
             <button type="button" id="btn-voice-echo" class="hw-btn studio-fx-btn">
               <span data-i18n="studio.echo">ECO VOZ</span>
@@ -781,6 +776,14 @@
                 <span class="led-dot" id="chorus-led-1"></span>
                 <span class="led-dot" id="chorus-led-2"></span>
                 <span class="led-dot" id="chorus-led-3"></span>
+              </span>
+            </button>
+            <button type="button" id="btn-voice-filter" class="hw-btn studio-fx-btn" aria-label="Filtro voz, nivel 0 de 3">
+              <span data-i18n="studio.filter">FILTRO VOZ</span>
+              <span class="led-strip-3" aria-hidden="true">
+                <span class="led-dot" id="filter-led-1"></span>
+                <span class="led-dot" id="filter-led-2"></span>
+                <span class="led-dot" id="filter-led-3"></span>
               </span>
             </button>
           </div>
@@ -801,6 +804,24 @@
           <section class="settings-block studio-video-block">
             <div class="settings-heading"><h2><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-camera"></use></svg><span data-i18n="studio.video.title">Generador de vídeo corto</span></h2></div>
             <p data-i18n="studio.video.instructions">Usa la mezcla recortada como audio del vídeo.</p>
+            <div id="video-style-grid" class="video-style-grid" role="group" aria-label="Estilo de vídeo" data-i18n-aria="studio.video.style">
+              <button type="button" id="btn-video-style-pure" class="hw-btn video-style-btn" data-video-style="pure" aria-pressed="true">
+                <strong data-i18n="studio.video.pure">1 · Puro</strong>
+                <span data-i18n="studio.video.pureDesc">Cámara limpia u OLED</span>
+              </button>
+              <button type="button" id="btn-video-style-keys" class="hw-btn video-style-btn" data-video-style="keys" aria-pressed="false">
+                <strong data-i18n="studio.video.keys">2 · Teclado</strong>
+                <span data-i18n="studio.video.keysDesc">7 teclas y acordes</span>
+              </button>
+              <button type="button" id="btn-video-style-orbit" class="hw-btn video-style-btn" data-video-style="orbit" aria-pressed="false">
+                <strong data-i18n="studio.video.orbit">3 · Órbita</strong>
+                <span data-i18n="studio.video.orbitDesc">Constelación de notas</span>
+              </button>
+              <button type="button" id="btn-video-style-cosmos" class="hw-btn video-style-btn" data-video-style="cosmos" aria-pressed="false">
+                <strong data-i18n="studio.video.cosmos">4 · Cosmos</strong>
+                <span data-i18n="studio.video.cosmosDesc">Estrellas y neón</span>
+              </button>
+            </div>
             <input type="text" id="demo-video-title-input" maxlength="40" placeholder="Título del vídeo (opcional)" aria-label="Título del vídeo (opcional)" data-i18n-placeholder="studio.video.titleInput" data-i18n-aria="studio.video.titleInput">
             <button type="button" id="btn-create-demo-video" class="hw-btn settings-btn" data-i18n="studio.video.create">Generar vídeo corto</button>
             <p id="demo-video-status" role="status" hidden></p>

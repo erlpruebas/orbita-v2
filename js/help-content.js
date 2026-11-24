@@ -41,10 +41,11 @@ export const HELP_CONTENT = {
       ]
     },
     {
-      title: 'Estudio de Maqueta y filtro de micro',
+      title: 'Estudio de Maqueta y filtro de voz',
       topics: [
-        ['Grabar y mezclar', 'Pulsa el micrófono de la barra superior para grabar. El LED rojo y el contador indican que la captura está en marcha. Pulsa otra vez para abrir el estudio con pistas de música y voz.'],
-        ['Cuatro niveles de filtro', 'En CONFIG, los LED cian indican 0 (sin filtro), 1 (poco filtro), 2 (mucho filtro) o 3 (filtro máximo). El ajuste se aplica al iniciar la siguiente maqueta.'],
+        ['Grabar y mezclar', 'Pulsa el micrófono de la barra superior. La música se detiene durante la precuenta de cuatro tiempos (1-2-3-4) y vuelve a sonar en el tiempo 1, justo al empezar la grabación. Pulsa durante la precuenta para cancelar. Cuando el LED se ponga rojo, pulsa de nuevo para terminar y abrir el estudio con las pistas de música y voz.'],
+        ['Filtro de voz a posteriori', 'El micrófono conserva la toma cruda. En el Estudio de Maqueta, pulsa FILTRO VOZ para pasar de 0 a 3 LEDs esmeralda. Con 0 oyes la toma cruda. Los niveles 1, 2 y 3 reducen cada vez más el ruido y el sangrado de altavoz en las pausas. La onda ámbar refleja el ajuste y el filtro se aplica a la escucha, al MP3 y al vídeo.'],
+        ['Saltar en la onda', 'Toca o haz clic en la onda para escuchar desde ese punto. Arrastra el cabezal blanco y suelta para saltar a otra posición dentro del recorte. La etiqueta del cabezal muestra el tiempo.'],
         ['Editar y exportar', 'Recorta inicio y final, ajusta los dos volúmenes y compensa el desfase de la voz con SINCRO. El eco usa LED cian y el chorus, violetas. Escucha la mezcla y expórtala o compártela como MP3.']
       ]
     },
@@ -52,7 +53,8 @@ export const HELP_CONTENT = {
       title: 'Cámara frontal y vídeo corto',
       topics: [
         ['Captura frontal', 'Activa Cámara frontal en CONFIG antes de grabar y concede el permiso al iniciar la maqueta. El botón ✕ minimiza la vista en espejo y la grabación continúa.'],
-        ['Vídeo vertical 9:16', 'Ajusta el recorte y la mezcla, añade un título si quieres y pulsa Generar vídeo corto. El vídeo HD combina la mezcla con la cámara en espejo o con el visualizador OLED. Al terminar puedes previsualizarlo, descargarlo o compartirlo.']
+        ['Vídeo vertical HD', 'Ajusta el recorte y la mezcla, elige un estilo y añade un título si quieres. Pulsa Generar vídeo corto para crear un vídeo de 720 × 1280 (9:16). Al terminar puedes previsualizarlo, descargarlo o compartirlo.'],
+        ['Cuatro estilos de vídeo', 'Puro muestra la cámara en espejo con un distintivo discreto, o una onda OLED con el título y la nota actual si grabas sin cámara. Teclado ilumina las siete teclas y muestra los acordes, Órbita conecta las notas en una constelación de doce posiciones y Cosmos dispara ondas y partículas neón con cada ataque. Los estilos reactivos siguen las notas reales del teclado, el acompañamiento, las progresiones y el looper. Los cuatro funcionan con o sin cámara frontal.']
       ]
     }
   ],
@@ -97,10 +99,11 @@ export const HELP_CONTENT = {
       ]
     },
     {
-      title: 'Demo Studio and microphone filter',
+      title: 'Demo Studio and voice filter',
       topics: [
-        ['Record and mix', 'Press the microphone button in the top bar to record. The red LED and counter show that recording is in progress. Press it again to open the studio with music and vocal tracks.'],
-        ['Four filter levels', 'In SETTINGS, cyan LEDs show the mic filter level from 0 (no filter) through 1 (light), 2 (strong) and 3 (max). The setting applies to the next demo you record.'],
+        ['Record and mix', 'Press the microphone button in the top bar. The music stops during the four-beat count-in (1-2-3-4) and restarts on beat 1 as recording begins. Press during the count-in to cancel. Once the LED turns red, press again to finish and open the studio with the music and vocal tracks.'],
+        ['Voice filter after recording', 'The microphone preserves the raw take. In the Demo Studio, press VOICE FILTER to cycle from 0 to 3 emerald LEDs. Level 0 plays the raw take. Levels 1, 2 and 3 increasingly reduce noise and speaker bleed during pauses. The amber waveform reflects the setting, which applies to preview, MP3 and video.'],
+        ['Seek on the waveform', 'Tap or click the waveform to play from that point. Drag the white playhead and release to jump to another position within the trim. The playhead label shows the time.'],
         ['Edit and export', 'Trim the start and end, set both volumes and use SYNC to align the vocals. Echo uses cyan LEDs and chorus uses violet. Preview the mix and export or share it as an MP3.']
       ]
     },
@@ -108,7 +111,8 @@ export const HELP_CONTENT = {
       title: 'Front camera and short video',
       topics: [
         ['Front camera capture', 'Enable Front Camera in SETTINGS and grant camera access when you start recording. Press ✕ to minimize the mirrored preview while recording continues.'],
-        ['Vertical 9:16 video', 'Adjust the trim and mix, add a title if you like, and press Make short video. The HD video pairs the mix with mirrored camera footage or the OLED visualizer. You can preview, download or share it when it is ready.']
+        ['Vertical HD video', 'Adjust the trim and mix, choose a style and add a title if you like. Press Make short video to create a 720 × 1280 (9:16) video. You can preview, download or share it when it is ready.'],
+        ['Four video styles', 'Pure shows mirrored camera footage with a discreet badge, or an OLED waveform with the title and current note if you record without a camera. Keys lights up seven keys and shows chords, Orbit connects notes in a twelve-position constellation, and Cosmos sends out neon waves and particles on each attack. The reactive styles follow actual notes from the keyboard, accompaniment, progressions and looper. All four work with or without the front camera.']
       ]
     }
   ]

@@ -1,7 +1,7 @@
 /**
  * demo-recorder.js — Estudio Multipista de Maquetas (2 Pistas Sincronizadas: Música + Voz)
  * - Captura simultánea sample-accurate vía AudioWorklet de 3 canales:
- *   Canal 0/1 = Música estéreo de ÓRBITA | Canal 2 = Micrófono con filtro configurable
+ *   Canal 0/1 = Música estéreo de ÓRBITA | Canal 2 = Micrófono crudo
  * - Detiene automáticamente la batería y el looper al parar la grabación para escuchar en silencio
  * - Mezclador en tiempo real y renderizado offline (.WAV 16-bit estéreo):
  *   · Volumen Música (0–150%) y Volumen Voz (0–180%)
@@ -9,34 +9,40 @@
  *   · Recorte de Inicio y Final (Trim Start / End) con forma de onda de 2 pistas
  */
 
-import { ensureAudioUnlocked, getMasterOutputNode, safeParam } from './audio-core.js';
-import { stopAllTransportForPlayback } from './clock-looper.js';
+import { ensureAudioUnlocked, getAudioContext, getMasterOutputNode, safeParam, triggerMetronomeClick } from './audio-core.js';
+import { getArmedTransportSnapshot, getTransportSnapshot, startArmedTransportAt, stopAllTransportForPlayback } from './clock-looper.js';
 import { t } from './i18n.js';
-import { getState } from './state.js';
+import { getState, setState } from './state.js';
 import { prepareFrontCamera } from './short-video.js';
-import { getActivePreset } from './synth-presets.js';
-import { getNoteNameUpper } from './theory.js';
+import { getActivePreset, setNoteEventObserver } from './synth-presets.js';
+import { formatChordLabel, getDiatonicDegrees, getNoteNameTitle, getNoteNameUpper } from './theory.js';
 
-const MIC_FILTER_CONFIGS = [
-  { echoCancellation: false, noiseSuppression: false, autoGainControl: false, highpassHz: 40, gateThreshold: 0 },
-  { echoCancellation: true, noiseSuppression: false, autoGainControl: false, highpassHz: 80, gateThreshold: 0 },
-  { echoCancellation: true, noiseSuppression: true, autoGainControl: false, highpassHz: 110, gateThreshold: 0.008 },
-  { echoCancellation: true, noiseSuppression: true, autoGainControl: true, highpassHz: 140, gateThreshold: 0.018 }
+const VOICE_FILTER_PRESETS = [
+  { highpassHz: 40, deMudDb: 0, presenceDb: 0, lowpassHz: 20000, gateThreshold: 0, gateFloor: 1.0, musicDuckAmt: 0 },
+  { highpassHz: 95, deMudDb: -2.0, presenceDb: 1.2, lowpassHz: 15000, gateThreshold: 0.008, gateFloor: 0.45, musicDuckAmt: 0.25 },
+  { highpassHz: 130, deMudDb: -3.5, presenceDb: 2.5, lowpassHz: 12000, gateThreshold: 0.015, gateFloor: 0.20, musicDuckAmt: 0.55 },
+  { highpassHz: 165, deMudDb: -5.0, presenceDb: 3.5, lowpassHz: 9500, gateThreshold: 0.024, gateFloor: 0.06, musicDuckAmt: 0.85 }
 ];
 
-export function getMicFilterConfig(level) {
-  const config = Number.isInteger(level) ? MIC_FILTER_CONFIGS[level] : null;
-  return { ...(config ?? MIC_FILTER_CONFIGS[0]) };
+export function getVoiceFilterPreset(level) {
+  const preset = Number.isInteger(level) ? VOICE_FILTER_PRESETS[level] : null;
+  return { ...(preset ?? VOICE_FILTER_PRESETS[0]) };
 }
 
 let isRecording = false;
-let startTimestamp = 0;
+let isCaptureBusy = false;
+let isCountingIn = false;
+const countInTimers = new Set();
+const countInClicks = [];
 let timerInterval = null;
 let statusCallback = null;
 let cameraCapture = null;
 let cameraRequested = false;
 let videoMetadata = null;
-let micGateThreshold = 0;
+let recordedNoteEvents = [];
+let keyboardDegrees = [];
+let recordingStartAudioTime = null;
+let firstCapturedFrame = null;
 
 // Nodos de grabación multipista
 let musicSplitter = null;
@@ -44,11 +50,12 @@ let musicTapGain = null;
 let micStream = null;
 let micSource = null;
 let micHighpass = null;
-let micGain = null;
 let mergerNode = null;
 let workletNode = null;
 let workletLoaded = false;
 let silentSink = null;
+let scriptProcessor = null;
+let scriptCaptureGate = null;
 
 // Fallback MediaRecorder si el navegador no soporta AudioWorklet (ej. HTTP sin localhost)
 let fallbackDest = null;
@@ -66,6 +73,7 @@ let detectedRoundTripMs = 110; // Estimación inicial de latencia ida y vuelta (
 
 // Sesión actual grabada en memoria (AudioBuffers de 2 pistas)
 let currentSession = null;
+let filteredVoice = null;
 
 // Estado de preescucha en vivo del Estudio de Maqueta
 let previewState = null;
@@ -99,6 +107,7 @@ class OrbitaMultitrackProcessor extends AudioWorkletProcessor {
       const vM = input.length > 2 ? input[2] : null;
       if (mL && mL.length > 0) {
         this.port.postMessage({
+          frame: currentFrame,
           mL: new Float32Array(mL),
           mR: new Float32Array(mR),
           vM: vM ? new Float32Array(vM) : null
@@ -129,6 +138,14 @@ export function isDemoRecording() {
   return isRecording;
 }
 
+export function isDemoCountIn() {
+  return isCountingIn;
+}
+
+export function isDemoRecordingOrCountIn() {
+  return isRecording || isCountingIn;
+}
+
 export function getCurrentDemoSession() {
   return currentSession;
 }
@@ -142,11 +159,10 @@ export function formatElapsedTime(sec) {
 
 export function formatPreciseTime(sec) {
   const safe = Math.max(0, Number(sec) || 0);
-  const m = Math.floor(safe / 60);
-  const rem = safe - m * 60;
-  const whole = Math.floor(rem);
-  const tenths = Math.floor((rem - whole) * 10);
-  return `${m}:${String(whole).padStart(2, '0')}.${tenths}`;
+  const tenths = Math.floor(safe * 10 + 1e-9);
+  const minutes = Math.floor(tenths / 600);
+  const seconds = Math.floor(tenths / 10) % 60;
+  return `${minutes}:${String(seconds).padStart(2, '0')}.${tenths % 10}`;
 }
 
 function makeFilename(ext = 'wav') {
@@ -168,37 +184,93 @@ function concatFloat32Chunks(chunks) {
   return out;
 }
 
-function applyVoiceGate(samples, sampleRate, threshold) {
-  const attack = 1 - Math.exp(-1 / (0.003 * sampleRate));
-  const envelopeDecay = 1 - Math.exp(-1 / (0.012 * sampleRate));
-  const release = 1 - Math.exp(-1 / (0.055 * sampleRate));
-  const floorGain = 0.12;
-  let power = 0;
-  let gain = floorGain;
-  for (let i = 0; i < samples.length; i++) {
-    const squared = samples[i] ** 2;
-    power += (squared - power) * (squared > power ? attack : envelopeDecay);
-    const open = Math.min(1, Math.max(0, Math.sqrt(power) / threshold - 0.5));
-    const target = floorGain + (1 - floorGain) * open * open * (3 - 2 * open);
+export function buildFilteredVoiceSamples(rawVoiceSamples, musicSamples, sampleRate, level, voiceOffsetMs = 0) {
+  const { gateThreshold, gateFloor, musicDuckAmt } = getVoiceFilterPreset(level);
+  if (!gateThreshold) return rawVoiceSamples.slice();
+
+  const samples = new Float32Array(rawVoiceSamples.length);
+  const attack = 1 - Math.exp(-1 / (0.006 * sampleRate));
+  const release = 1 - Math.exp(-1 / (0.090 * sampleRate));
+  const detector = 1 - Math.exp(-1 / (0.008 * sampleRate));
+  const shift = Math.round(voiceOffsetMs * sampleRate / 1000);
+  let voicePower = 0;
+  let musicPower = 0;
+  let gain = gateFloor;
+  for (let i = 0; i < rawVoiceSamples.length; i++) {
+    const voice = rawVoiceSamples[i];
+    const music = musicSamples?.[i + shift] ?? 0;
+    voicePower += (voice * voice - voicePower) * detector;
+    musicPower += (music * music - musicPower) * detector;
+    const musicRms = Math.sqrt(musicPower);
+    // Elevar el umbral con la música alineada, limitándolo para conservar las frases suaves.
+    const leakage = Math.min(2 * gateThreshold, 0.22 * musicRms) * musicDuckAmt;
+    const ratio = (Math.sqrt(voicePower) - leakage) / gateThreshold;
+    const open = Math.max(0, Math.min(1, ratio - 0.65));
+    const vocalActivity = open * open * (3 - 2 * open);
+    const musicActivity = musicRms / (musicRms + 0.045);
+    const quietGain = gateFloor * (1 - musicDuckAmt * musicActivity);
+    const target = quietGain + (1 - quietGain) * vocalActivity;
     gain += (target - gain) * (target > gain ? attack : release);
-    samples[i] *= gain;
+    samples[i] = voice * gain;
   }
+  return samples;
+}
+
+function getKeyboardDegrees(state) {
+  const { rootSemitone, scaleMode, octaveOffset, customScale, notation } = state;
+  return getDiatonicDegrees(rootSemitone, scaleMode, octaveOffset, customScale, notation);
+}
+
+const pitchClass = midi => ((midi % 12) + 12) % 12;
+
+function recordNoteEvent({ notes, when, duration, velocity }) {
+  if (!isDemoRecordingOrCountIn() || when < recordingStartAudioTime) return;
+  const state = getState();
+  const degrees = getKeyboardDegrees(state);
+  const pitchClasses = [...new Set(notes.map(pitchClass))];
+  const matchingChord = pitchClasses.length >= 3 && degrees.find(degree =>
+    degree.triadMidi.every(note => pitchClasses.includes(pitchClass(note)))
+    && pitchClasses.every(pc => degree.triadMidi.some(note => pitchClass(note) === pc)
+      || pc === pitchClass(degree.seventhMidi))
+  );
+  const rootPc = matchingChord ? matchingChord.pitchClass : pitchClass(Math.min(...notes));
+  const degree = matchingChord || degrees.find(entry => entry.pitchClass === rootPc);
+  const intervals = pitchClasses.map(pc => pitchClass(pc - rootPc));
+  const isChord = intervals.includes(3) || intervals.includes(4);
+  const quality = intervals.includes(3) && !intervals.includes(4) ? 'm' : 'M';
+  const seventh = isChord && intervals.includes(10) ? '7' : isChord && intervals.includes(11) ? 'maj7' : '';
+  const label = isChord
+    ? formatChordLabel(rootPc, quality, state.notation) + seventh
+    : getNoteNameTitle(rootPc, state.notation);
+  const event = {
+    when, notes, pitchClasses, rootPc, label, degreeIndex: degree?.degreeIndex ?? null,
+    durationSec: duration, velocity, cancelled: false
+  };
+  recordedNoteEvents.push(event);
+  return () => { event.cancelled = true; };
+}
+
+function captureSamples(frame, musicL, musicR, voice) {
+  firstCapturedFrame ??= frame;
+  rawMusicL.push(musicL);
+  rawMusicR.push(musicR);
+  if (hasMicActive && voice) rawVoice.push(voice);
 }
 
 function setCameraLivePreview(stream) {
+  if (typeof document === 'undefined') return;
   const pip = document.getElementById('camera-live-pip');
   const video = document.getElementById('camera-live-video');
-  video.srcObject = stream;
-  pip.hidden = !stream;
+  if (video) video.srcObject = stream;
+  if (pip) pip.hidden = !stream;
 }
 
 function computeWaveformPeaks(channelData, bins = 220) {
   const peaks = new Float32Array(bins);
   if (!channelData || channelData.length === 0) return peaks;
-  const step = Math.max(1, Math.floor(channelData.length / bins));
   for (let b = 0; b < bins; b++) {
-    const start = b * step;
-    const end = Math.min(channelData.length, start + step);
+    const start = Math.floor(b * channelData.length / bins);
+    const end = Math.floor((b + 1) * channelData.length / bins);
     let maxVal = 0;
     for (let i = start; i < end; i++) {
       const a = Math.abs(channelData[i]);
@@ -207,6 +279,33 @@ function computeWaveformPeaks(channelData, bins = 220) {
     peaks[b] = maxVal;
   }
   return peaks;
+}
+
+function getStudioVoice(settings) {
+  if (!currentSession?.voiceBuffer) return null;
+  if (!getVoiceFilterPreset(settings.voiceFilter).gateThreshold) {
+    return { buffer: currentSession.voiceBuffer, peaks: currentSession.voicePeaks };
+  }
+  const { voiceFilter: level, voiceOffsetMs = 0 } = settings;
+  if (filteredVoice?.level === level && filteredVoice.voiceOffsetMs === voiceOffsetMs) return filteredVoice;
+
+  const { voiceBuffer, musicBuffer } = currentSession;
+  const musicL = musicBuffer.getChannelData(0);
+  let music = musicL;
+  if (musicBuffer.numberOfChannels > 1) {
+    const musicR = musicBuffer.getChannelData(1);
+    // Tomar el canal dominante por muestra para detectar también señales estéreo en contrafase.
+    music = musicL.map((left, i) => Math.max(Math.abs(left), Math.abs(musicR[i])));
+  }
+  const samples = buildFilteredVoiceSamples(voiceBuffer.getChannelData(0), music, voiceBuffer.sampleRate, level, voiceOffsetMs);
+  const buffer = getAudioContext().createBuffer(1, samples.length, voiceBuffer.sampleRate);
+  buffer.copyToChannel(samples, 0);
+  filteredVoice = { level, voiceOffsetMs, buffer, peaks: computeWaveformPeaks(samples) };
+  return filteredVoice;
+}
+
+export function getStudioVoicePeaks(settings) {
+  return getStudioVoice(settings)?.peaks ?? null;
 }
 
 function encodeAudioBufferToWavBlob(audioBuffer) {
@@ -328,9 +427,31 @@ function buildTwoTrackMixGraph(ctx, destNode, settings) {
   musicGain.gain.setValueAtTime(safeParam(settings.musicVol ?? 0.90, 0, 2.0), now);
   musicGain.connect(masterLimiter);
 
-  // PISTA 2: Voz + Cadena de FX (Chorus estéreo + Eco cálido)
+  // PISTA 2: EQ, chorus estéreo y eco. El nivel 0 deja pasar la captura sin otra EQ.
   const voiceInputGain = ctx.createGain();
   voiceInputGain.gain.setValueAtTime(safeParam(settings.voiceVol ?? 1.15, 0, 2.5), now);
+  const filter = getVoiceFilterPreset(settings.voiceFilter);
+  const highpass = ctx.createBiquadFilter();
+  highpass.type = 'highpass';
+  highpass.frequency.setValueAtTime(filter.highpassHz, now);
+  const deMud = ctx.createBiquadFilter();
+  deMud.type = 'peaking';
+  deMud.frequency.setValueAtTime(260, now);
+  deMud.gain.setValueAtTime(filter.deMudDb, now);
+  const presence = ctx.createBiquadFilter();
+  presence.type = 'peaking';
+  presence.frequency.setValueAtTime(3200, now);
+  presence.gain.setValueAtTime(filter.presenceDb, now);
+  const lowpass = ctx.createBiquadFilter();
+  lowpass.type = 'lowpass';
+  lowpass.frequency.setValueAtTime(filter.lowpassHz, now);
+  const voiceEq = ctx.createGain();
+  const voiceBypass = ctx.createGain();
+  const postEq = ctx.createGain();
+  voiceEq.gain.setValueAtTime(filter.gateThreshold ? 1 : 0, now);
+  voiceBypass.gain.setValueAtTime(filter.gateThreshold ? 0 : 1, now);
+  voiceInputGain.connect(highpass).connect(deMud).connect(presence).connect(lowpass).connect(voiceEq).connect(postEq);
+  voiceInputGain.connect(voiceBypass).connect(postEq);
 
   // --- CHORUS ESTÉREO (0..3) ---
   const chCfg = CHORUS_PRESETS[Math.max(0, Math.min(3, settings.voiceChorus || 0))];
@@ -363,15 +484,15 @@ function buildTwoTrackMixGraph(ctx, destNode, settings) {
   lfoDepthR.connect(chorusDelayR.delayTime);
 
   const chorusMerger = ctx.createChannelMerger(2);
-  voiceInputGain.connect(chorusDelayL);
-  voiceInputGain.connect(chorusDelayR);
+  postEq.connect(chorusDelayL);
+  postEq.connect(chorusDelayR);
   chorusDelayL.connect(chorusMerger, 0, 0);
   chorusDelayR.connect(chorusMerger, 0, 1);
   chorusMerger.connect(chorusWet);
 
   const postChorusSum = ctx.createGain();
   postChorusSum.gain.setValueAtTime(1.0, now);
-  voiceInputGain.connect(chorusDry);
+  postEq.connect(chorusDry);
   chorusDry.connect(postChorusSum);
   chorusWet.connect(postChorusSum);
 
@@ -409,6 +530,14 @@ function buildTwoTrackMixGraph(ctx, destNode, settings) {
       musicGain.gain.setTargetAtTime(safeParam(newSettings.musicVol ?? 0.90, 0, 2.0), t, 0.02);
       voiceInputGain.gain.setTargetAtTime(safeParam(newSettings.voiceVol ?? 1.15, 0, 2.5), t, 0.02);
 
+      const f = getVoiceFilterPreset(newSettings.voiceFilter);
+      highpass.frequency.setTargetAtTime(f.highpassHz, t, 0.02);
+      deMud.gain.setTargetAtTime(f.deMudDb, t, 0.02);
+      presence.gain.setTargetAtTime(f.presenceDb, t, 0.02);
+      lowpass.frequency.setTargetAtTime(f.lowpassHz, t, 0.02);
+      voiceEq.gain.setTargetAtTime(f.gateThreshold ? 1 : 0, t, 0.02);
+      voiceBypass.gain.setTargetAtTime(f.gateThreshold ? 0 : 1, t, 0.02);
+
       const c = CHORUS_PRESETS[Math.max(0, Math.min(3, newSettings.voiceChorus || 0))];
       chorusWet.gain.setTargetAtTime(c.wet, t, 0.03);
       chorusDelayL.delayTime.setTargetAtTime(c.baseDelay, t, 0.03);
@@ -427,30 +556,40 @@ function buildTwoTrackMixGraph(ctx, destNode, settings) {
     stopLfos(atTime) {
       try { lfoL.stop(atTime); } catch (_) {}
       try { lfoR.stop(atTime); } catch (_) {}
+    },
+    disconnect() {
+      // Romper también el ciclo de feedback al reemplazar una preescucha.
+      echoFeedback.disconnect();
+      masterLimiter.disconnect();
     }
   };
 }
 
 /**
- * Arranca la grabación de maqueta multipista (Pista 1: Música Estéreo, Pista 2: Voz Micrófono)
+ * Prepara la captura multipista y programa la precuenta de la maqueta.
  */
 export async function startDemoRecording(onStatusUpdate) {
-  if (isRecording) return { ok: true };
-  stopDemoPreviewPlayback();
-  statusCallback = onStatusUpdate || null;
+  if (isCaptureBusy || isDemoRecordingOrCountIn()) return { ok: true };
+  isCaptureBusy = true;
+  try {
+    stopDemoPreviewPlayback();
+    statusCallback = onStatusUpdate || null;
+    const ctx = ensureAudioUnlocked();
+    await prepareDemoCapture(ctx);
+    scheduleDemoCountIn(ctx);
+    return { ok: true, hasMic: hasMicActive, micWarning: micWarningReason };
+  } catch (error) {
+    if (isCountingIn) cancelDemoCountIn();
+    else releasePreparedCapture();
+    throw error;
+  } finally {
+    isCaptureBusy = false;
+  }
+}
 
-  const ctx = ensureAudioUnlocked();
+async function prepareDemoCapture(ctx) {
   const masterNode = getMasterOutputNode();
-  const { micFilterLevel, cameraEnabled, rootSemitone, notation, scaleMode, lang, bpm } = getState();
-  const { highpassHz, gateThreshold, ...audioConstraints } = getMicFilterConfig(micFilterLevel);
-  micGateThreshold = gateThreshold;
-  cameraRequested = cameraEnabled;
-  const modeLabel = scaleMode === 'custom' ? t('custom.title', lang) : scaleMode;
-  videoMetadata = {
-    keyLabel: `${getNoteNameUpper(rootSemitone, notation)} ${modeLabel}`,
-    soundName: getActivePreset().name,
-    bpm
-  };
+  cameraRequested = getState().cameraEnabled;
 
   rawMusicL = [];
   rawMusicR = [];
@@ -458,6 +597,9 @@ export async function startDemoRecording(onStatusUpdate) {
   fallbackChunks = [];
   hasMicActive = false;
   micWarningReason = '';
+  recordingStartAudioTime = null;
+  firstCapturedFrame = null;
+  recordedNoteEvents = [];
 
   // 1. Tap estéreo de la música interna de ÓRBITA
   musicTapGain = ctx.createGain();
@@ -466,20 +608,17 @@ export async function startDemoRecording(onStatusUpdate) {
   masterNode.connect(musicTapGain);
   musicTapGain.connect(musicSplitter);
 
-  // 2. Nivel 0 conserva la captura musical cruda. Los niveles superiores son optativos.
-  if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+  // 2. Captura de voz cruda, con pasaaltos subsónico fijo.
+  if (globalThis.navigator?.mediaDevices?.getUserMedia) {
     try {
-      micStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
+      micStream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+      });
       micSource = ctx.createMediaStreamSource(micStream);
       micHighpass = ctx.createBiquadFilter();
       micHighpass.type = 'highpass';
-      micHighpass.frequency.setValueAtTime(highpassHz, ctx.currentTime);
-
-      micGain = ctx.createGain();
-      micGain.gain.setValueAtTime(1.15, ctx.currentTime);
-
+      micHighpass.frequency.setValueAtTime(40, ctx.currentTime);
       micSource.connect(micHighpass);
-      micHighpass.connect(micGain);
       hasMicActive = true;
 
       // Medir latencia hardware real de salida (AudioContext) + entrada (MediaStreamTrack) sin retardo extra de AEC
@@ -501,22 +640,26 @@ export async function startDemoRecording(onStatusUpdate) {
 
   cameraCapture = cameraRequested ? await prepareFrontCamera() : null;
 
-  // 3. Conectar los 3 canales sincronizados al AudioWorklet multipista
+  // 3. Conectar los 3 canales sincronizados al AudioWorklet multipista.
+  mergerNode = ctx.createChannelMerger(3);
+  musicSplitter.connect(mergerNode, 0, 0);
+  musicSplitter.connect(mergerNode, 1, 1);
+  if (hasMicActive) micHighpass.connect(mergerNode, 0, 2);
+  silentSink = ctx.createGain();
+  silentSink.gain.setValueAtTime(0, ctx.currentTime);
+  silentSink.connect(ctx.destination);
+
   if (ctx.audioWorklet) {
     try {
       if (!workletLoaded) {
         const blob = new Blob([MULTITRACK_WORKLET_CODE], { type: 'application/javascript' });
         const url = URL.createObjectURL(blob);
-        await ctx.audioWorklet.addModule(url);
-        URL.revokeObjectURL(url);
+        try {
+          await ctx.audioWorklet.addModule(url);
+        } finally {
+          URL.revokeObjectURL(url);
+        }
         workletLoaded = true;
-      }
-
-      mergerNode = ctx.createChannelMerger(3);
-      musicSplitter.connect(mergerNode, 0, 0);
-      musicSplitter.connect(mergerNode, 1, 1);
-      if (hasMicActive && micGain) {
-        micGain.connect(mergerNode, 0, 2);
       }
 
       workletNode = new AudioWorkletNode(ctx, 'orbita-multitrack-recorder', {
@@ -527,59 +670,175 @@ export async function startDemoRecording(onStatusUpdate) {
         channelInterpretation: 'discrete'
       });
 
-      workletNode.port.onmessage = (e) => {
-        if (!isRecording) return;
-        rawMusicL.push(e.data.mL);
-        rawMusicR.push(e.data.mR);
-        if (hasMicActive && e.data.vM) {
-          rawVoice.push(e.data.vM);
-        }
+      workletNode.port.onmessage = ({ data }) => {
+        if (recordingStartAudioTime === null || !isDemoRecordingOrCountIn()) return;
+        // Conservar solo las muestras desde el tiempo 1, incluso si cae dentro de un bloque.
+        const startFrame = Math.ceil(recordingStartAudioTime * ctx.sampleRate);
+        const skip = Math.max(0, startFrame - data.frame);
+        if (skip >= data.mL.length) return;
+        captureSamples(data.frame + skip, data.mL.subarray(skip), data.mR.subarray(skip), data.vM?.subarray(skip));
       };
 
-      silentSink = ctx.createGain();
-      silentSink.gain.setValueAtTime(0.0, ctx.currentTime);
       mergerNode.connect(workletNode);
       workletNode.connect(silentSink);
-      silentSink.connect(ctx.destination);
     } catch (_) {
       workletNode = null;
     }
   }
 
-  // Fallback si no hubo AudioWorklet (HTTP plano en red local sin HTTPS)
-  if (!workletNode && typeof ctx.createMediaStreamDestination === 'function' && typeof MediaRecorder !== 'undefined') {
+  // En navegadores sin AudioWorklet, conservar las pistas separadas también en el respaldo.
+  if (!workletNode && typeof ctx.createScriptProcessor === 'function') {
+    try {
+      scriptProcessor = ctx.createScriptProcessor(1024, 3, 1);
+      scriptProcessor.onaudioprocess = ({ inputBuffer }) => {
+        if (!isRecording) return;
+        captureSamples(null, inputBuffer.getChannelData(0).slice(), inputBuffer.getChannelData(1).slice(),
+          hasMicActive ? inputBuffer.getChannelData(2).slice() : null);
+      };
+      scriptCaptureGate = ctx.createGain();
+      scriptCaptureGate.gain.setValueAtTime(0, ctx.currentTime);
+      mergerNode.connect(scriptCaptureGate).connect(scriptProcessor);
+      scriptProcessor.connect(silentSink);
+    } catch (_) {
+      scriptProcessor = null;
+    }
+  }
+
+  if (!workletNode && !scriptProcessor && typeof ctx.createMediaStreamDestination === 'function' && typeof MediaRecorder !== 'undefined') {
     try {
       fallbackDest = ctx.createMediaStreamDestination();
       musicTapGain.connect(fallbackDest);
-      if (hasMicActive && micGain) micGain.connect(fallbackDest);
+      musicTapGain.gain.setValueAtTime(0, ctx.currentTime);
       fallbackRecorder = new MediaRecorder(fallbackDest.stream);
       fallbackRecorder.ondataavailable = (ev) => {
         if (ev.data && ev.data.size > 0) fallbackChunks.push(ev.data);
       };
-      fallbackRecorder.start(250);
     } catch (_) {
       fallbackRecorder = null;
     }
   }
+}
 
-  if (cameraCapture && !cameraCapture.start()) cameraCapture = null;
-  if (cameraCapture) setCameraLivePreview(cameraCapture.stream);
-  isRecording = true;
-  startTimestamp = performance.now();
+function scheduleCountInCue(ctx, audioTime, callback) {
+  const delayMs = Math.max(0, Math.ceil((audioTime - ctx.currentTime) * 1000));
+  const id = setTimeout(() => {
+    countInTimers.delete(id);
+    if (!isCountingIn) return;
+    if (ctx.currentTime < audioTime) scheduleCountInCue(ctx, audioTime, callback);
+    else callback();
+  }, delayMs);
+  countInTimers.add(id);
+}
 
-  if (statusCallback) {
-    statusCallback({ recording: true, elapsedSec: 0, hasMic: hasMicActive, micWarning: micWarningReason });
+function scheduleDemoCountIn(ctx) {
+  const armed = getArmedTransportSnapshot();
+  stopAllTransportForPlayback();
+  const st = getState();
+  const { rootSemitone, notation, scaleMode, lang, bpm } = st;
+  const modeLabel = scaleMode === 'custom' ? t('custom.title', lang) : scaleMode;
+  videoMetadata = {
+    keyLabel: `${getNoteNameUpper(rootSemitone, notation)} ${modeLabel}`,
+    soundName: getActivePreset().name,
+    bpm,
+    notation
+  };
+  keyboardDegrees = getKeyboardDegrees(st);
+
+  const beatDur = 60 / (bpm || 92);
+  const t0 = ctx.currentTime + 0.04;
+  const recordStartAt = t0 + 4 * beatDur;
+  recordingStartAudioTime = recordStartAt;
+  isCountingIn = true;
+  scriptCaptureGate?.gain.setValueAtTime(1, recordStartAt);
+  if (fallbackRecorder) musicTapGain.gain.setValueAtTime(1, recordStartAt);
+
+  for (let i = 0; i < 4; i++) {
+    const clickTime = t0 + i * beatDur;
+    countInClicks.push(triggerMetronomeClick(clickTime, i === 0));
+    scheduleCountInCue(ctx, clickTime, () => {
+      setState({ currentBeat: i });
+      statusCallback?.({
+        recording: false, countingIn: true, countInBeat: i, countInRemaining: 4 - i,
+        elapsedSec: 0, hasMic: hasMicActive, micWarning: micWarningReason
+      });
+    });
   }
 
-  timerInterval = setInterval(() => {
-    if (!isRecording) return;
-    const elapsedSec = (performance.now() - startTimestamp) / 1000;
-    if (statusCallback) {
-      statusCallback({ recording: true, elapsedSec, hasMic: hasMicActive, micWarning: micWarningReason });
-    }
-  }, 250);
+  // Programar el transporte con margen para que Web Audio ejecute el primer paso en recordStartAt.
+  scheduleCountInCue(ctx, recordStartAt - 0.06, () => {
+    setNoteEventObserver(recordNoteEvent);
+    startArmedTransportAt(recordStartAt, armed);
+  });
+  scheduleCountInCue(ctx, recordStartAt, () => {
+    countInClicks.length = 0;
+    if (cameraCapture?.start() === false) cameraCapture = null;
+    if (cameraCapture) setCameraLivePreview(cameraCapture.stream);
+    try { fallbackRecorder?.start(250); } catch (_) {}
 
-  return { ok: true, hasMic: hasMicActive, micWarning: micWarningReason };
+    isCountingIn = false;
+    isRecording = true;
+    setState({ currentBeat: getTransportSnapshot().running ? 0 : -1 });
+    const notify = elapsedSec => statusCallback?.({
+      recording: true, countingIn: false, elapsedSec, hasMic: hasMicActive, micWarning: micWarningReason
+    });
+    timerInterval = setInterval(() => notify(ctx.currentTime - recordStartAt), 250);
+    notify(0);
+  });
+}
+
+export function cancelDemoCountIn() {
+  if (!isCountingIn) return;
+  isCountingIn = false;
+  for (const timer of countInTimers) clearTimeout(timer);
+  countInTimers.clear();
+  for (const click of countInClicks) click.stop();
+  countInClicks.length = 0;
+  setNoteEventObserver(null);
+  recordedNoteEvents = [];
+  stopAllTransportForPlayback();
+  releasePreparedCapture();
+  const notify = statusCallback;
+  statusCallback = null;
+  notify?.({ recording: false, countingIn: false, elapsedSec: 0 });
+}
+
+function releaseStream(stream) {
+  stream?.getTracks().forEach(track => { try { track.stop(); } catch (_) {} });
+}
+
+function releasePreparedCapture() {
+  // La cámara preparada aún no tiene un MediaRecorder en marcha que produzca un blob.
+  releaseStream(cameraCapture?.stream);
+  cameraCapture = null;
+  setCameraLivePreview(null);
+  disconnectDemoCapture();
+}
+
+function disconnectDemoCapture() {
+  if (musicTapGain) {
+    try { getMasterOutputNode().disconnect(musicTapGain); } catch (_) {}
+  }
+  if (workletNode) workletNode.port.onmessage = null;
+  if (scriptProcessor) scriptProcessor.onaudioprocess = null;
+  for (const node of [musicTapGain, musicSplitter, micSource, micHighpass, mergerNode,
+    workletNode, scriptProcessor, scriptCaptureGate, silentSink, fallbackDest]) {
+    try { node?.disconnect(); } catch (_) {}
+  }
+  releaseStream(micStream);
+  releaseStream(fallbackDest?.stream);
+
+  micStream = null;
+  musicTapGain = null;
+  musicSplitter = null;
+  micSource = null;
+  micHighpass = null;
+  mergerNode = null;
+  workletNode = null;
+  scriptProcessor = null;
+  scriptCaptureGate = null;
+  silentSink = null;
+  fallbackDest = null;
+  fallbackRecorder = null;
 }
 
 /**
@@ -589,6 +848,16 @@ export async function startDemoRecording(onStatusUpdate) {
 export async function stopDemoRecording() {
   if (!isRecording) return null;
   isRecording = false;
+  isCaptureBusy = true;
+  try {
+    return await finishDemoRecording();
+  } finally {
+    isCaptureBusy = false;
+  }
+}
+
+async function finishDemoRecording() {
+  setNoteEventObserver(null);
   const cameraResult = cameraCapture?.stop();
   cameraCapture = null;
   setCameraLivePreview(null);
@@ -614,36 +883,10 @@ export async function stopDemoRecording() {
     });
   }
 
-  // Desconectar nodos y cerrar micrófono
-  const safeDisc = (n) => { try { if (n) n.disconnect(); } catch (_) {} };
-  safeDisc(musicTapGain);
-  safeDisc(musicSplitter);
-  safeDisc(micSource);
-  safeDisc(micHighpass);
-  safeDisc(micGain);
-  safeDisc(mergerNode);
-  safeDisc(workletNode);
-  safeDisc(silentSink);
-
-  if (micStream) {
-    micStream.getTracks().forEach((t) => { try { t.stop(); } catch (_) {} });
-    micStream = null;
-  }
-
-  musicTapGain = null;
-  musicSplitter = null;
-  micSource = null;
-  micHighpass = null;
-  micGain = null;
-  mergerNode = null;
-  workletNode = null;
-  silentSink = null;
-  fallbackDest = null;
-  fallbackRecorder = null;
-
-  if (statusCallback) {
-    statusCallback({ recording: false, elapsedSec: 0, hasMic: hasMicActive, micWarning: micWarningReason });
-  }
+  disconnectDemoCapture();
+  const notify = statusCallback;
+  statusCallback = null;
+  notify?.({ recording: false, countingIn: false, elapsedSec: 0, hasMic: hasMicActive, micWarning: micWarningReason });
 
   let musicBuffer = null;
   let voiceBuffer = null;
@@ -684,9 +927,16 @@ export async function stopDemoRecording() {
   // 2) Combinado con la latencia hardware medida (`detectedRoundTripMs`)
   const autoMeasuredOffsetMs = estimateVoiceSyncOffsetMs(musicBuffer, voiceBuffer, detectedRoundTripMs);
   const voiceSamples = voiceBuffer?.getChannelData(0);
-  if (voiceSamples && micGateThreshold > 0) applyVoiceGate(voiceSamples, sampleRate, micGateThreshold);
   const voicePeaks = voiceSamples ? computeWaveformPeaks(voiceSamples, 220) : null;
+  const audioStart = firstCapturedFrame === null ? recordingStartAudioTime : firstCapturedFrame / sampleRate;
+  const noteEvents = recordedNoteEvents
+    .filter(event => !event.cancelled)
+    .map(({ when, cancelled, ...event }) => ({ ...event, timeSec: when - audioStart }))
+    .filter(event => event.timeSec < durationSec && event.timeSec + event.durationSec > 0)
+    .sort((a, b) => a.timeSec - b.timeSec);
+  recordedNoteEvents = [];
 
+  filteredVoice = null;
   currentSession = {
     sampleRate,
     durationSec,
@@ -699,6 +949,8 @@ export async function stopDemoRecording() {
     cameraBlob,
     cameraUnavailable: cameraRequested && !cameraBlob,
     videoMetadata,
+    noteEvents,
+    keyboardDegrees,
     detectedRoundTripMs,
     autoMeasuredOffsetMs
   };
@@ -796,29 +1048,23 @@ export function estimateVoiceSyncOffsetMs(musicBuffer, voiceBuffer, fallbackRoun
  */
 function scheduleSyncedVoiceSource(ctx, voiceBuffer, destNode, startAtAudioTime, trimStart, playDur, voiceOffsetMs) {
   const shiftSec = (Number(voiceOffsetMs) || 0) / 1000;
-  // Si shiftSec = -0.120s (voz llegó 120ms tarde), empezamos a leer voiceBuffer 120ms más adelante (trimStart + 0.120)
-  const rawVoiceReadPos = trimStart - shiftSec;
-
+  const rawReadPos = trimStart - shiftSec;
+  const offset = Math.max(0, rawReadPos);
+  const delay = Math.max(0, -rawReadPos);
+  const duration = Math.min(playDur - delay, voiceBuffer.duration - offset);
+  if (duration <= 0) return null;
   const vSrc = ctx.createBufferSource();
   vSrc.buffer = voiceBuffer;
   vSrc.connect(destNode);
-
-  if (rawVoiceReadPos >= 0) {
-    if (rawVoiceReadPos < voiceBuffer.duration - 0.01) {
-      const availDur = Math.min(playDur, voiceBuffer.duration - rawVoiceReadPos);
-      if (availDur > 0.01) {
-        vSrc.start(startAtAudioTime, rawVoiceReadPos, availDur);
-      }
-    }
-  } else {
-    // shiftSec positivo: retrasar ligeramente el inicio de la voz
-    const delayStart = -rawVoiceReadPos;
-    const availDur = Math.min(playDur - delayStart, voiceBuffer.duration);
-    if (availDur > 0.01) {
-      vSrc.start(startAtAudioTime + delayStart, 0, availDur);
-    }
-  }
+  vSrc.start(startAtAudioTime + delay, offset, duration);
   return vSrc;
+}
+
+function getTrimBounds({ durationSec, sampleRate }, settings) {
+  const minDuration = 1 / sampleRate;
+  const start = Math.max(0, Math.min(durationSec - minDuration, settings.trimStartSec || 0));
+  const end = Math.max(start + minDuration, Math.min(durationSec, settings.trimEndSec ?? durationSec));
+  return { start, end };
 }
 
 /**
@@ -826,57 +1072,78 @@ function scheduleSyncedVoiceSource(ctx, voiceBuffer, destNode, startAtAudioTime,
  * con Volumen Música, Volumen Voz, Eco (0-3) y Chorus (0-3) modificables EN VIVO.
  */
 export function isDemoPreviewPlaying() {
-  return Boolean(previewState && previewState.playing);
+  return previewState !== null;
+}
+
+export function getCurrentPreviewPositionSec() {
+  if (!previewState) return null;
+  const { ctx, startAt, startSec, playDur, tailSec } = previewState;
+  const elapsed = ctx.currentTime - startAt;
+  return elapsed >= playDur + tailSec ? null : startSec + Math.min(playDur, Math.max(0, elapsed));
 }
 
 export function stopDemoPreviewPlayback() {
+  finishDemoPreview();
+}
+
+function finishDemoPreview(replacementAt = null) {
   if (!previewState) return;
   const st = previewState;
   previewState = null;
 
-  if (st.rafId) cancelAnimationFrame(st.rafId);
-  const ctx = ensureAudioUnlocked();
-  const now = ctx.currentTime;
-
-  try { if (st.musicSrc) st.musicSrc.stop(now); } catch (_) {}
-  try { if (st.voiceSrc) st.voiceSrc.stop(now); } catch (_) {}
-  try { if (st.graph) st.graph.stopLfos(now); } catch (_) {}
-
-  if (st.onEnded) st.onEnded();
+  cancelAnimationFrame(st.rafId);
+  const fadeStart = replacementAt ?? st.ctx.currentTime;
+  const stopAt = fadeStart + 0.008;
+  const gain = st.output.gain;
+  gain.cancelScheduledValues(fadeStart);
+  gain.setValueAtTime(gain.value, fadeStart);
+  gain.linearRampToValueAtTime(0, stopAt);
+  st.musicSrc.stop(stopAt);
+  st.voiceSrc?.stop(stopAt);
+  st.graph.stopLfos(stopAt);
+  setTimeout(() => {
+    st.graph.disconnect();
+    st.output.disconnect();
+  }, Math.ceil((stopAt - st.ctx.currentTime) * 1000) + 20);
+  if (replacementAt === null) st.onEnded?.();
 }
 
 export function updateLivePreviewMix(settings) {
-  if (previewState && previewState.playing && previewState.graph) {
-    previewState.graph.updateParams(settings);
-  }
+  previewState?.graph.updateParams(settings);
 }
 
-export function startDemoPreviewPlayback(settings, onProgress, onEnded) {
-  stopDemoPreviewPlayback();
+export function startDemoPreviewPlayback(settings, onProgress, onEnded, seekStartSec = null) {
   if (!currentSession || !currentSession.musicBuffer) return false;
 
   const ctx = ensureAudioUnlocked();
-  const now = ctx.currentTime + 0.02;
+  const voice = getStudioVoice(settings);
+  const { start: trimStart, end: trimEnd } = getTrimBounds(currentSession, settings);
+  const maxSeek = Math.max(trimStart, trimEnd - 0.05);
+  const startSec = Math.max(trimStart, Math.min(maxSeek, Number.isFinite(seekStartSec) ? seekStartSec : trimStart));
+  const playDur = trimEnd - startSec;
 
-  const trimStart = Math.max(0, Math.min(currentSession.durationSec - 0.1, settings.trimStartSec || 0));
-  const trimEnd = Math.max(trimStart + 0.1, Math.min(currentSession.durationSec, settings.trimEndSec || currentSession.durationSec));
-  const playDur = trimEnd - trimStart;
-
-  const graph = buildTwoTrackMixGraph(ctx, ctx.destination, settings);
+  const output = ctx.createGain();
+  output.connect(ctx.destination);
+  const graph = buildTwoTrackMixGraph(ctx, output, settings);
+  const startAt = ctx.currentTime + 0.008;
+  finishDemoPreview(startAt);
+  output.gain.setValueAtTime(0, ctx.currentTime);
+  output.gain.setValueAtTime(0, startAt);
+  output.gain.linearRampToValueAtTime(1, startAt + 0.008);
 
   const musicSrc = ctx.createBufferSource();
   musicSrc.buffer = currentSession.musicBuffer;
   musicSrc.connect(graph.musicGain);
-  musicSrc.start(now, trimStart, playDur);
+  musicSrc.start(startAt, startSec, playDur);
 
   let voiceSrc = null;
-  if (currentSession.voiceBuffer) {
+  if (voice) {
     voiceSrc = scheduleSyncedVoiceSource(
       ctx,
-      currentSession.voiceBuffer,
+      voice.buffer,
       graph.voiceInputGain,
-      now,
-      trimStart,
+      startAt,
+      startSec,
       playDur,
       settings.voiceOffsetMs || 0
     );
@@ -884,29 +1151,21 @@ export function startDemoPreviewPlayback(settings, onProgress, onEnded) {
 
   // Si hay eco activo en voz, dejar sonar la cola del eco ~0.6s al terminar el recorte
   const tailSec = (settings.voiceEcho || 0) > 0 ? 0.65 : 0.08;
-  const stopAt = now + playDur + tailSec;
+  const stopAt = startAt + playDur + tailSec;
 
   const localState = {
-    playing: true,
-    graph,
-    musicSrc,
-    voiceSrc,
-    rafId: null,
-    onEnded
+    ctx, graph, output, musicSrc, voiceSrc, startAt, startSec, playDur, tailSec, rafId: null, onEnded
   };
   previewState = localState;
 
   const tick = () => {
-    if (previewState !== localState || !localState.playing) return;
-    const elapsed = ctx.currentTime - now;
-    if (elapsed >= playDur + tailSec) {
+    if (previewState !== localState) return;
+    const position = getCurrentPreviewPositionSec();
+    if (position === null) {
       stopDemoPreviewPlayback();
       return;
     }
-    if (onProgress) {
-      const clampedPos = trimStart + Math.min(playDur, Math.max(0, elapsed));
-      onProgress(clampedPos);
-    }
+    onProgress?.(position);
     localState.rafId = requestAnimationFrame(tick);
   };
   localState.rafId = requestAnimationFrame(tick);
@@ -922,8 +1181,7 @@ export async function renderFinalMixBuffer(settings) {
   if (!currentSession || !currentSession.musicBuffer) return null;
 
   const sr = currentSession.sampleRate;
-  const trimStart = Math.max(0, Math.min(currentSession.durationSec - 0.1, settings.trimStartSec || 0));
-  const trimEnd = Math.max(trimStart + 0.1, Math.min(currentSession.durationSec, settings.trimEndSec || currentSession.durationSec));
+  const { start: trimStart, end: trimEnd } = getTrimBounds(currentSession, settings);
   const trimmedDur = trimEnd - trimStart;
   const tailSec = (settings.voiceEcho || 0) > 0 ? 0.85 : 0.05;
   const totalFrames = Math.ceil((trimmedDur + tailSec) * sr);
@@ -946,10 +1204,11 @@ export async function renderFinalMixBuffer(settings) {
   mSrc.connect(graph.musicGain);
   mSrc.start(0, trimStart, trimmedDur);
 
-  if (currentSession.voiceBuffer) {
+  const voice = getStudioVoice(settings);
+  if (voice) {
     scheduleSyncedVoiceSource(
       offCtx,
-      currentSession.voiceBuffer,
+      voice.buffer,
       graph.voiceInputGain,
       0,
       trimStart,

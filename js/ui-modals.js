@@ -10,7 +10,7 @@ import { exportLooperSnapshot } from './clock-looper.js';
 import { deleteSession, listSessions, loadSession, renameSession, saveCurrentSession } from './sessions.js';
 import { renderHelpAccordion } from './help-content.js';
 import { startTutorial } from './tutorial.js';
-import { encodeShortVideo } from './short-video.js';
+import { encodeShortVideo, VIDEO_STYLES } from './short-video.js';
 import {
   SYNTH_PRESETS,
   getPresetById,
@@ -40,10 +40,14 @@ import {
   computeTonalityAnalysis
 } from './tonality-mic.js';
 import {
+  cancelDemoCountIn,
+  isDemoCountIn,
   isDemoRecording,
   startDemoRecording,
   stopDemoRecording,
   getCurrentDemoSession,
+  getCurrentPreviewPositionSec,
+  getStudioVoicePeaks,
   isDemoPreviewPlaying,
   startDemoPreviewPlayback,
   stopDemoPreviewPlayback,
@@ -72,6 +76,8 @@ let videoUrl = null;
 let videoStatus = null;
 let videoStatusTimeout = null;
 let generatedVideo = null;
+let videoStyleId = VIDEO_STYLES[0];
+let waveformPointerId = null;
 
 // Estado del Estudio de Maqueta (2 pistas)
 const studioMix = {
@@ -79,10 +85,13 @@ const studioMix = {
   voiceVol: 1.15,
   voiceEcho: 0,      // 0..3 LEDs cian
   voiceChorus: 0,    // 0..3 LEDs violeta
+  voiceFilter: 0,
   voiceOffsetMs: -110, // Compensación de latencia en ms (negativo = adelanta la voz)
   trimStartSec: 0,
-  trimEndSec: 0
+  trimEndSec: 0,
+  playheadSec: null
 };
+let appliedVoiceOffsetMs = studioMix.voiceOffsetMs;
 
 function stopAllPreviews() {
   customPreview?.stop(null, true);
@@ -103,8 +112,9 @@ function setControlLabel(element, label) {
 function renderHeaderLabels() {
   const st = getState();
   const record = document.getElementById('btn-demo-rec');
-  record.title = translate(isDemoRecording() ? 'header.recordStop' : 'header.recordTitle');
-  record.setAttribute('aria-label', translate(isDemoRecording() ? 'header.recordStop' : 'header.record'));
+  const recordAction = isDemoCountIn() ? 'header.recordCancel' : isDemoRecording() ? 'header.recordStop' : null;
+  record.title = translate(recordAction ?? 'header.recordTitle');
+  record.setAttribute('aria-label', translate(recordAction ?? 'header.record'));
   setControlLabel(document.getElementById('btn-open-sessions'), translate('header.sessions'));
   setControlLabel(document.getElementById('btn-open-config'), translate('header.config'));
   setControlLabel(document.getElementById('btn-open-tonality'), translate('header.tonality'));
@@ -129,6 +139,7 @@ export function applyI18nToDOM() {
   renderStudioWarning(getCurrentDemoSession());
   renderDemoExportLabels();
   renderVideoStatus();
+  updateVoiceFilterLabel();
 }
 
 function initCustomEditor() {
@@ -227,10 +238,6 @@ function renderSettings(st) {
     settings.querySelectorAll(`[data-${key}]`).forEach(button => {
       button.setAttribute('aria-pressed', String(button.dataset[key] === st[key]));
     });
-  }
-  document.getElementById('config-mic-filter-level').textContent = translate(`config.micFilter.${st.micFilterLevel}`);
-  for (let i = 1; i <= 3; i++) {
-    document.getElementById(`mic-filter-led-${i}`).classList.toggle('on-cyan', st.micFilterLevel >= i);
   }
   const camera = document.getElementById('btn-config-camera');
   camera.setAttribute('aria-pressed', String(st.cameraEnabled));
@@ -640,7 +647,7 @@ function updateTonalityModalDOM(snapshot) {
  * SERVICIO 3: ESTUDIO DE MAQUETA (2 PISTAS: MÚSICA + VOZ, FX Y RECORTE)
  * =====================================================================
  */
-function drawTwoTrackWaveform(playheadSec = null) {
+function drawTwoTrackWaveform() {
   const canvas = document.getElementById('demo-waveform-canvas');
   const session = getCurrentDemoSession();
   if (!canvas || !session) return;
@@ -674,7 +681,8 @@ function drawTwoTrackWaveform(playheadSec = null) {
 
   // Pista 2: Voz (mitad inferior / ámbar), desplazada visualmente según `voiceOffsetMs`
   // para poder ver los picos vocales alineándose exactamente bajo los golpes de batería
-  if (session.voicePeaks) {
+  const voicePeaks = getStudioVoicePeaks({ voiceFilter: studioMix.voiceFilter, voiceOffsetMs: appliedVoiceOffsetMs });
+  if (voicePeaks) {
     const shiftSec = (studioMix.voiceOffsetMs || 0) / 1000;
     const shiftBins = Math.round((shiftSec / Math.max(0.01, session.durationSec)) * bins);
     ctx2d.fillStyle = 'rgba(245, 158, 11, 0.85)';
@@ -682,8 +690,8 @@ function drawTwoTrackWaveform(playheadSec = null) {
       // shiftBins negativo = adelantar la voz -> leemos muestras más adelante (i - shiftBins)
       const srcIdx = i - shiftBins;
       if (srcIdx < 0 || srcIdx >= bins) continue;
-      const val = Math.min(1, session.voicePeaks[srcIdx] * 1.6);
-      const barH = Math.max(1.5, val * (h * 0.44));
+      const val = Math.min(1, voicePeaks[srcIdx] * 1.6);
+      const barH = val * (h * 0.44);
       ctx2d.fillRect(i * barW, h / 2, Math.max(1, barW - 0.6), barH);
     }
   }
@@ -708,14 +716,32 @@ function drawTwoTrackWaveform(playheadSec = null) {
   ctx2d.stroke();
 
   // Cabezal de reproducción en vivo
+  const { playheadSec } = studioMix;
+  const selectedSec = playheadSec ?? studioMix.trimStartSec;
+  canvas.setAttribute('aria-valuenow', String(Number(selectedSec.toFixed(2))));
+  const timeLabel = formatPreciseTime(selectedSec);
+  canvas.setAttribute('aria-valuetext', timeLabel);
   if (playheadSec !== null) {
-    const px = Math.max(0, Math.min(w, (playheadSec / dur) * w));
+    const px = Math.max(1, Math.min(w - 1, (playheadSec / dur) * w));
     ctx2d.strokeStyle = '#ffffff';
     ctx2d.lineWidth = 2;
     ctx2d.beginPath();
     ctx2d.moveTo(px, 0);
     ctx2d.lineTo(px, h);
     ctx2d.stroke();
+    ctx2d.fillStyle = '#ffffff';
+    ctx2d.beginPath();
+    ctx2d.moveTo(px - 6, 0);
+    ctx2d.lineTo(px + 6, 0);
+    ctx2d.lineTo(px, 8);
+    ctx2d.fill();
+    ctx2d.font = '700 14px monospace';
+    const labelWidth = ctx2d.measureText(timeLabel).width + 8;
+    const labelX = px + labelWidth + 8 < w ? px + 7 : px - labelWidth - 7;
+    ctx2d.fillStyle = '#07080a';
+    ctx2d.fillRect(labelX, 4, labelWidth, 18);
+    ctx2d.fillStyle = '#ffffff';
+    ctx2d.fillText(timeLabel, labelX + 4, 17);
   }
 }
 
@@ -726,7 +752,7 @@ function updateStudioControlsDOM() {
   const trimReadout = document.getElementById('studio-trim-readout');
   const startValEl = document.getElementById('trim-start-val');
   const endValEl = document.getElementById('trim-end-val');
-  const trimmedDur = Math.max(0.1, studioMix.trimEndSec - studioMix.trimStartSec);
+  const trimmedDur = studioMix.trimEndSec - studioMix.trimStartSec;
 
   if (startValEl) startValEl.textContent = formatPreciseTime(studioMix.trimStartSec);
   if (endValEl) endValEl.textContent = formatPreciseTime(studioMix.trimEndSec);
@@ -755,11 +781,41 @@ function updateStudioControlsDOM() {
   }
   // LEDs de Chorus (0..3 violeta)
   for (let i = 1; i <= 3; i++) {
-    const led = document.getElementById(`chorus-led-${i}`);
-    if (led) led.classList.toggle('on-violet', studioMix.voiceChorus >= i);
+    document.getElementById(`chorus-led-${i}`).classList.toggle('on-violet', studioMix.voiceChorus >= i);
+    document.getElementById(`filter-led-${i}`).classList.toggle('on-emerald', studioMix.voiceFilter >= i);
   }
 
-  drawTwoTrackWaveform(null);
+  updateVoiceFilterLabel();
+  const canvas = document.getElementById('demo-waveform-canvas');
+  canvas.setAttribute('aria-valuemin', String(studioMix.trimStartSec));
+  canvas.setAttribute('aria-valuemax', String(studioMix.trimEndSec));
+  drawTwoTrackWaveform();
+}
+
+function updateVoiceFilterLabel() {
+  document.getElementById('btn-voice-filter').setAttribute('aria-label',
+    translate('studio.filterLevel', { level: studioMix.voiceFilter }));
+}
+
+function clampStudioSeek(sec) {
+  const { trimStartSec: start, trimEndSec: end } = studioMix;
+  return Math.max(start, Math.min(Math.max(start, end - 0.05), sec));
+}
+
+function playStudioMix(seekStartSec = null) {
+  const ok = startDemoPreviewPlayback(studioMix, posSec => {
+    if (waveformPointerId !== null) return;
+    studioMix.playheadSec = posSec;
+    drawTwoTrackWaveform();
+  }, () => {
+    setPreviewPlayBtnState(false);
+    drawTwoTrackWaveform();
+  }, seekStartSec);
+  if (ok) {
+    studioMix.playheadSec = clampStudioSeek(seekStartSec ?? studioMix.trimStartSec);
+    drawTwoTrackWaveform();
+    setPreviewPlayBtnState(true);
+  }
 }
 
 function setPreviewPlayBtnState(playing) {
@@ -823,6 +879,14 @@ function resetDemoVideo() {
   videoUrl = null;
 }
 
+function selectVideoStyle(styleId) {
+  if (!VIDEO_STYLES.includes(styleId)) return;
+  videoStyleId = styleId;
+  document.getElementById('video-style-grid').querySelectorAll('[data-video-style]').forEach(button => {
+    button.setAttribute('aria-pressed', String(button.dataset.videoStyle === styleId));
+  });
+}
+
 async function createDemoVideo(event) {
   const session = getCurrentDemoSession();
   if (!session) return;
@@ -831,7 +895,7 @@ async function createDemoVideo(event) {
   ensureAudioUnlocked();
   const button = event.currentTarget;
   const title = document.getElementById('demo-video-title-input').value.trim().slice(0, 40);
-  const meta = { ...session.videoMetadata, title, hasCamera: Boolean(session.cameraBlob) };
+  const meta = { ...session.videoMetadata, title, styleId: videoStyleId, hasCamera: Boolean(session.cameraBlob) };
   const job = new AbortController();
   videoJob = job;
   button.disabled = true;
@@ -840,12 +904,24 @@ async function createDemoVideo(event) {
   try {
     const mix = await renderFinalMixBuffer({ ...studioMix });
     job.signal.throwIfAborted();
+    const trimEnd = mix.trimStart + mix.trimmedDur;
+    const noteEvents = [];
+    for (const event of session.noteEvents) {
+      const start = Math.max(mix.trimStart, event.timeSec);
+      const end = Math.min(trimEnd, event.timeSec + event.durationSec);
+      if (end > start) noteEvents.push({
+        ...event,
+        timeSec: start - mix.trimStart,
+        durationSec: end - start,
+        continued: event.timeSec < mix.trimStart
+      });
+    }
     const output = await encodeShortVideo(mix, session.cameraBlob, percent => {
       if (videoJob === job && videoStatus?.percent !== percent) {
         videoStatus = { key: 'studio.video.creating', percent };
         renderVideoStatus();
       }
-    }, job.signal, meta);
+    }, job.signal, { ...meta, noteEvents, keyboardDegrees: session.keyboardDegrees });
     job.signal.throwIfAborted();
     const preview = document.getElementById('demo-video-preview');
     const download = document.getElementById('demo-video-download');
@@ -922,6 +998,7 @@ function openDemoStudioModal(session) {
 
   if (!modal || !session) return;
   resetDemoVideo();
+  selectVideoStyle(VIDEO_STYLES[0]);
   document.getElementById('demo-video-title-input').value = '';
 
   // Inicializar parámetros del estudio usando la compensación de latencia medida o la calibración guardada
@@ -929,9 +1006,13 @@ function openDemoStudioModal(session) {
   studioMix.voiceVol = 1.15;
   studioMix.voiceEcho = 0;
   studioMix.voiceChorus = 0;
+  studioMix.voiceFilter = 0;
   studioMix.voiceOffsetMs = getSavedVoiceSyncMs(session.autoMeasuredOffsetMs ?? -110);
+  appliedVoiceOffsetMs = studioMix.voiceOffsetMs;
   studioMix.trimStartSec = 0;
   studioMix.trimEndSec = session.durationSec;
+  studioMix.playheadSec = null;
+  waveformPointerId = null;
 
   if (startRange) startRange.value = '0';
   if (endRange) endRange.value = '1000';
@@ -942,6 +1023,7 @@ function openDemoStudioModal(session) {
   if (syncRow) syncRow.classList.toggle('is-disabled', !session.hasVoiceTrack);
   if (btnEcho) btnEcho.disabled = !session.hasVoiceTrack;
   if (btnChorus) btnChorus.disabled = !session.hasVoiceTrack;
+  document.getElementById('btn-voice-filter').disabled = !session.hasVoiceTrack;
 
   renderStudioWarning(session);
 
@@ -983,9 +1065,6 @@ export function initModalsUI() {
   }
   document.getElementById('btn-config-camera')?.addEventListener('click', () => {
     setState({ cameraEnabled: !getState().cameraEnabled });
-  });
-  document.getElementById('btn-config-mic-filter').addEventListener('click', () => {
-    setState({ micFilterLevel: (getState().micFilterLevel + 1) % 4 });
   });
   document.getElementById('btn-activate-custom-mode').addEventListener('click', () => setState({ scaleMode: 'custom' }));
   const settings = document.getElementById('config-settings');
@@ -1076,17 +1155,26 @@ export function initModalsUI() {
     btnDemoRec.focus();
   });
 
-  const updateDemoRecButtonUI = ({ recording, elapsedSec }) => {
-    if (btnDemoRec) btnDemoRec.classList.toggle('is-demo-rec', Boolean(recording));
-    if (timerDemoRec?.hidden === Boolean(recording)) renderHeaderLabels();
-    if (ledDemoRec) ledDemoRec.classList.toggle('on-ruby', Boolean(recording));
+  const updateDemoRecButtonUI = ({ recording = false, countingIn = false, countInRemaining, elapsedSec }) => {
+    const modeChanged = btnDemoRec.classList.contains('is-demo-countin') !== countingIn
+      || btnDemoRec.classList.contains('is-demo-rec') !== recording;
+    btnDemoRec.classList.toggle('is-demo-countin', countingIn);
+    btnDemoRec.classList.toggle('is-demo-rec', recording);
+    if (modeChanged) renderHeaderLabels();
+    ledDemoRec?.classList.toggle('on-amber', countingIn);
+    ledDemoRec?.classList.toggle('on-ruby', recording);
     if (timerDemoRec) {
-      timerDemoRec.hidden = !recording;
-      if (recording) timerDemoRec.textContent = formatElapsedTime(elapsedSec);
+      timerDemoRec.hidden = !countingIn && !recording;
+      if (countingIn) timerDemoRec.textContent = `-${countInRemaining}`;
+      else if (recording) timerDemoRec.textContent = formatElapsedTime(elapsedSec);
     }
   };
 
   btnDemoRec?.addEventListener('click', async () => {
+    if (isDemoCountIn()) {
+      cancelDemoCountIn();
+      return;
+    }
     ensureAudioUnlocked();
     btnDemoRec.disabled = true;
     try {
@@ -1097,7 +1185,6 @@ export function initModalsUI() {
         await startDemoRecording(updateDemoRecButtonUI);
       } else {
         const session = await stopDemoRecording();
-        updateDemoRecButtonUI({ recording: false, elapsedSec: 0 });
         if (session) openDemoStudioModal(session);
       }
     } finally {
@@ -1112,6 +1199,7 @@ export function initModalsUI() {
     const rawSec = (Number(e.target.value) / 1000) * session.durationSec;
     const maxStart = Math.max(0, studioMix.trimEndSec - 0.2);
     studioMix.trimStartSec = Math.min(rawSec, maxStart);
+    if (studioMix.playheadSec !== null) studioMix.playheadSec = clampStudioSeek(studioMix.playheadSec);
     if (rawSec > maxStart) {
       e.target.value = String(Math.round((maxStart / session.durationSec) * 1000));
     }
@@ -1124,6 +1212,7 @@ export function initModalsUI() {
     const rawSec = (Number(e.target.value) / 1000) * session.durationSec;
     const minEnd = Math.min(session.durationSec, studioMix.trimStartSec + 0.2);
     studioMix.trimEndSec = Math.max(rawSec, minEnd);
+    if (studioMix.playheadSec !== null) studioMix.playheadSec = clampStudioSeek(studioMix.playheadSec);
     if (rawSec < minEnd) {
       e.target.value = String(Math.round((minEnd / session.durationSec) * 1000));
     }
@@ -1144,21 +1233,16 @@ export function initModalsUI() {
   });
 
   // Controles de Sincronización Voz vs Música (Compensación de latencia hardware en ms)
-  const applyVoiceSyncOffset = (newMs, restartIfPlaying = true) => {
+  const applyVoiceSyncOffset = (newMs, commit = true) => {
     const clamped = Math.max(-400, Math.min(150, Math.round(newMs)));
     studioMix.voiceOffsetMs = clamped;
-    saveVoiceSyncMs(clamped);
-    updateStudioControlsDOM();
-    if (restartIfPlaying && isDemoPreviewPlaying()) {
-      startDemoPreviewPlayback(
-        studioMix,
-        (posSec) => drawTwoTrackWaveform(posSec),
-        () => {
-          setPreviewPlayBtnState(false);
-          drawTwoTrackWaveform(null);
-        }
-      );
+    if (commit) {
+      appliedVoiceOffsetMs = clamped;
+      saveVoiceSyncMs(clamped);
     }
+    updateStudioControlsDOM();
+    const position = commit ? getCurrentPreviewPositionSec() : null;
+    if (position !== null) playStudioMix(position);
   };
 
   document.getElementById('mix-voice-sync')?.addEventListener('input', (e) => {
@@ -1192,24 +1276,63 @@ export function initModalsUI() {
     updateLivePreviewMix(studioMix);
   });
 
+  document.getElementById('btn-voice-filter').addEventListener('click', () => {
+    studioMix.voiceFilter = (studioMix.voiceFilter + 1) % 4;
+    updateStudioControlsDOM();
+    const position = getCurrentPreviewPositionSec();
+    if (position !== null) playStudioMix(position);
+  });
+
+  const waveform = document.getElementById('demo-waveform-canvas');
+  let pointerStartSec = null;
+  const pointerPosition = event => {
+    const rect = waveform.getBoundingClientRect();
+    return clampStudioSeek((event.clientX - rect.left) / rect.width * getCurrentDemoSession().durationSec);
+  };
+  waveform.addEventListener('pointerdown', event => {
+    if (event.button !== 0 || waveformPointerId !== null || !getCurrentDemoSession()) return;
+    waveformPointerId = event.pointerId;
+    waveform.setPointerCapture(event.pointerId);
+    pointerStartSec = pointerPosition(event);
+    playStudioMix(pointerStartSec);
+  });
+  waveform.addEventListener('pointermove', event => {
+    if (event.pointerId !== waveformPointerId) return;
+    studioMix.playheadSec = pointerPosition(event);
+    drawTwoTrackWaveform();
+  });
+  waveform.addEventListener('pointerup', event => {
+    if (event.pointerId !== waveformPointerId) return;
+    waveformPointerId = null;
+    const targetSec = pointerPosition(event);
+    if (targetSec !== pointerStartSec) playStudioMix(targetSec);
+  });
+  waveform.addEventListener('lostpointercapture', event => {
+    if (event.pointerId !== waveformPointerId) return;
+    waveformPointerId = null;
+    studioMix.playheadSec = getCurrentPreviewPositionSec();
+    drawTwoTrackWaveform();
+  });
+  waveform.addEventListener('keydown', event => {
+    const current = studioMix.playheadSec ?? studioMix.trimStartSec;
+    const positions = {
+      ArrowLeft: current - 0.1, ArrowRight: current + 0.1,
+      ArrowDown: current - 0.1, ArrowUp: current + 0.1,
+      Home: studioMix.trimStartSec, End: studioMix.trimEndSec
+    };
+    if (!Object.hasOwn(positions, event.key)) return;
+    event.preventDefault();
+    playStudioMix(clampStudioSeek(positions[event.key]));
+  });
+
   // Botón Escuchar Mezcla / Parar
   document.getElementById('btn-demo-preview-play')?.addEventListener('click', () => {
     ensureAudioUnlocked();
     if (isDemoPreviewPlaying()) {
       stopDemoPreviewPlayback();
-      setPreviewPlayBtnState(false);
-      drawTwoTrackWaveform(null);
       return;
     }
-    const ok = startDemoPreviewPlayback(
-      studioMix,
-      (posSec) => drawTwoTrackWaveform(posSec),
-      () => {
-        setPreviewPlayBtnState(false);
-        drawTwoTrackWaveform(null);
-      }
-    );
-    if (ok) setPreviewPlayBtnState(true);
+    playStudioMix();
   });
 
   // Botón Exportar Mezcla Definitiva (.MP3)
@@ -1260,6 +1383,10 @@ export function initModalsUI() {
     if (modalDemo) modalDemo.hidden = true;
   });
   document.getElementById('btn-create-demo-video').addEventListener('click', createDemoVideo);
+  document.getElementById('video-style-grid').addEventListener('click', event => {
+    const button = event.target.closest('[data-video-style]');
+    if (button) selectVideoStyle(button.dataset.videoStyle);
+  });
   document.getElementById('btn-share-demo-video').addEventListener('click', shareDemoVideo);
 
   [modalConfig, modalTonality, modalDemo].forEach((backdrop) => {
@@ -1286,7 +1413,7 @@ export function initModalsUI() {
     }
     if (keys.some(key => ['scaleMode', 'yAxisMode', 'keyStrike'].includes(key))) renderHeaderLabels();
     if (activeConfigTab === 'settings' && keys.some(key =>
-      ['customScale', 'scaleMode', 'rootSemitone', 'octaveOffset', 'micFilterLevel', 'cameraEnabled'].includes(key)
+      ['customScale', 'scaleMode', 'rootSemitone', 'octaveOffset', 'cameraEnabled'].includes(key)
     )) renderSettings(state);
   });
 }

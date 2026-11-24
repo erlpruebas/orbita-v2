@@ -154,6 +154,12 @@ html, body {
   padding: 0 6px;
 }
 
+.hdr-btn-rec.is-demo-countin {
+  color: var(--led-amber-bright);
+  border-color: rgba(245, 158, 11, 0.75);
+  animation: pulse-demo-countin 0.35s ease-in-out infinite alternate;
+}
+
 .hdr-btn-rec.is-demo-rec {
   color: var(--led-ruby-bright);
   border-color: rgba(239, 68, 68, 0.78);
@@ -167,6 +173,15 @@ html, body {
   font-weight: 800;
   color: var(--led-ruby-bright);
   letter-spacing: 0.3px;
+}
+
+.hdr-btn-rec.is-demo-countin .demo-rec-timer {
+  color: var(--led-amber-bright);
+}
+
+@keyframes pulse-demo-countin {
+  from { box-shadow: inset 0 0 4px rgba(245, 158, 11, 0.2); }
+  to { box-shadow: inset 0 0 14px rgba(245, 158, 11, 0.55), 0 0 10px rgba(245, 158, 11, 0.3); }
 }
 
 @keyframes pulse-demo-rec {

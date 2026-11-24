@@ -1,6 +1,9 @@
 /** Captura frontal sin audio y exportación vertical con la mezcla de la maqueta. */
 
 import { ensureAudioUnlocked } from './audio-core.js';
+import { getNoteNameTitle } from './theory.js';
+
+export const VIDEO_STYLES = Object.freeze(['pure', 'keys', 'orbit', 'cosmos']);
 
 const VIDEO_MIME_TYPES = [
   'video/mp4;codecs=avc1,mp4a.40.2',
@@ -105,13 +108,17 @@ const BAR_COUNT = 36;
 const INSET = 48;
 const CONTENT_WIDTH = FRAME_WIDTH - 2 * INSET;
 const EMERALD = '#34d399';
-const CYAN = '#22d3ee';
 const AMBER = '#fbbf24';
+const CHASSIS = '#141518';
+const TAU = 2 * Math.PI;
+const CENTER_X = FRAME_WIDTH / 2;
 const TITLE_FONT = '800 56px system-ui, sans-serif';
 const MONO_FONT = '600 24px monospace';
+const KEY_ROWS = [[1, 3, 5], [0, 2, 4, 6]];
+const ROOT_HUES = [155, 338, 199, 283, 47, 315, 179, 223, 14, 265, 94, 354];
 
-function drawCameraCover(ctx, video) {
-  const scale = Math.max(FRAME_WIDTH / video.videoWidth, FRAME_HEIGHT / video.videoHeight);
+function drawCameraCover(ctx, video, zoom = 1) {
+  const scale = Math.max(FRAME_WIDTH / video.videoWidth, FRAME_HEIGHT / video.videoHeight) * zoom;
   const width = video.videoWidth * scale;
   const height = video.videoHeight * scale;
   ctx.save();
@@ -134,156 +141,386 @@ function getTitleLines(ctx, title) {
   return [firstLine.join(' '), words.join(' ')];
 }
 
+function panel(ctx, x, y, w, h, radius, fill, stroke) {
+  ctx.beginPath();
+  ctx.roundRect(x, y, w, h, radius);
+  ctx.fillStyle = fill;
+  ctx.fill();
+  if (stroke) {
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+}
+
+function text(ctx, label, x, y, font, color, align = 'center', maxWidth = CONTENT_WIDTH) {
+  if (!label) return;
+  ctx.textAlign = align;
+  ctx.font = font;
+  ctx.fillStyle = color;
+  ctx.fillText(label, x, y, maxWidth);
+}
+
+function circle(ctx, x, y, radius) {
+  ctx.beginPath();
+  ctx.arc(x, y, radius, 0, TAU);
+}
+
+function hueColor(hue, lightness, alpha = 1) {
+  return `hsla(${hue}, 94%, ${lightness}%, ${alpha})`;
+}
+
+function pitchAngle(pc) {
+  return (pc / 12 - 0.25) * TAU;
+}
+
+function pointOnRing(angle, radius, cy) {
+  return [CENTER_X + Math.cos(angle) * radius, cy + Math.sin(angle) * radius];
+}
+
 function makeFrameRenderer(ctx, video, analyser, sampleRate, meta) {
-  const center = FRAME_WIDTH / 2;
-  const orbitY = 600;
-  const background = ctx.createRadialGradient(center, orbitY, 0, center, orbitY, 690);
-  background.addColorStop(0, '#171a20');
-  background.addColorStop(1, '#090a0d');
-  const shade = ctx.createLinearGradient(0, 548, 0, FRAME_HEIGHT);
-  shade.addColorStop(0, '#090a0d00');
-  shade.addColorStop(0.72, '#090a0dd9');
-  shade.addColorStop(1, '#090a0dfc');
-  const oled = ctx.createLinearGradient(INSET, 0, FRAME_WIDTH - INSET, 0);
-  oled.addColorStop(0, EMERALD);
-  oled.addColorStop(0.52, CYAN);
-  oled.addColorStop(1, AMBER);
-
-  const grid = new Path2D();
-  for (let x = 24; x < FRAME_WIDTH; x += 24) {
-    grid.moveTo(x, 0);
-    grid.lineTo(x, FRAME_HEIGHT);
-  }
-  for (let y = 24; y < FRAME_HEIGHT; y += 24) {
-    grid.moveTo(0, y);
-    grid.lineTo(FRAME_WIDTH, y);
-  }
-
+  const style = VIDEO_STYLES.includes(meta.styleId) ? meta.styleId : VIDEO_STYLES[0];
   const titleLines = getTitleLines(ctx, meta.title?.trim().slice(0, 40));
-  const details = [meta.keyLabel, meta.bpm && `${meta.bpm} BPM`, meta.soundName].filter(Boolean).join(' · ');
+  const keyboardDegrees = meta.keyboardDegrees ?? [];
+  const chromaticLabels = Array.from({ length: 12 }, (_, pc) => getNoteNameTitle(pc, meta.notation));
+  const events = (meta.noteEvents ?? []).map(event => ({ ...event, endSec: event.timeSec + event.durationSec }));
   const spectrum = new Uint8Array(analyser.frequencyBinCount);
   const waveform = new Float32Array(analyser.fftSize);
+  const bands = new Float32Array(BAR_COUNT);
   const maxFrequency = Math.min(13000, sampleRate / 2);
   const bandEdges = Array.from({ length: BAR_COUNT + 1 }, (_, i) => {
     const hz = 45 * (maxFrequency / 45) ** (i / BAR_COUNT);
     return Math.min(spectrum.length - 1, Math.floor(hz * analyser.fftSize / sampleRate));
   });
+
+  const shade = ctx.createLinearGradient(0, 590, 0, FRAME_HEIGHT);
+  shade.addColorStop(0, '#07090c00');
+  shade.addColorStop(0.68, '#07090cc9');
+  shade.addColorStop(1, '#07090cf5');
+  const metal = ctx.createLinearGradient(0, 0, FRAME_WIDTH, FRAME_HEIGHT);
+  metal.addColorStop(0, '#22252a');
+  metal.addColorStop(0.48, CHASSIS);
+  metal.addColorStop(1, '#101114');
+  const oled = ctx.createLinearGradient(INSET, 0, FRAME_WIDTH - INSET, 0);
+  oled.addColorStop(0, EMERALD);
+  oled.addColorStop(1, AMBER);
+
   let pulse = 0;
+  let eventIndex = 0;
+  let active = [];
+  let bursts = [];
+  let hue = ROOT_HUES[0];
+  const stars = Array.from({ length: 96 }, (_, index) => ({
+    angle: index * 2.399963,
+    depth: ((index * 73) % 97) / 97,
+    speed: 0.15 + (index % 7) * 0.025
+  }));
 
-  function drawBrand() {
-    ctx.beginPath();
-    ctx.roundRect(INSET, INSET, CONTENT_WIDTH, video ? 113 : 70, 18);
-    ctx.fillStyle = video ? '#141518de' : '#141518';
-    ctx.fill();
-    ctx.strokeStyle = '#d8f4f426';
-    ctx.lineWidth = 1;
-    ctx.stroke();
-
-    ctx.beginPath();
-    ctx.arc(INSET + 26, 84, 5, 0, Math.PI * 2);
-    ctx.fillStyle = EMERALD;
-    ctx.shadowColor = EMERALD;
-    ctx.shadowBlur = 14;
-    ctx.fill();
-    ctx.shadowBlur = 0;
-    ctx.font = '800 30px monospace';
-    ctx.textAlign = 'left';
-    ctx.fillStyle = '#f0f8f7';
-    ctx.fillText('ÓRBITA', INSET + 44, 95);
-    if (video) drawDetails(INSET + 20, 135, 'left');
-  }
-
-  function drawDetails(x, y, align) {
-    ctx.textAlign = align;
-    ctx.fillStyle = '#c3d3d8';
-    ctx.font = MONO_FONT;
-    ctx.fillText(details, x, y, CONTENT_WIDTH - 40);
-  }
-
-  function drawOrbit(elapsed) {
-    ctx.fillStyle = background;
-    ctx.fillRect(0, 0, FRAME_WIDTH, FRAME_HEIGHT);
-    ctx.strokeStyle = '#75bbca10';
-    ctx.lineWidth = 1;
-    ctx.stroke(grid);
-    const angle = elapsed * 0.85;
-    for (let ring = 0; ring < 5; ring++) {
-      const radius = 65 + ring * 32 + pulse * (24 + ring * 4);
-      ctx.beginPath();
-      ctx.arc(center, orbitY, radius, 0, Math.PI * 2);
-      ctx.strokeStyle = `rgba(52, 211, 185, ${0.16 + pulse * 0.36})`;
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
-
-      const start = angle + ring * 1.2;
-      ctx.beginPath();
-      ctx.arc(center, orbitY, radius, start, start + 0.48 + pulse * 0.53);
-      ctx.strokeStyle = ring < 2 ? EMERALD : ring < 4 ? CYAN : AMBER;
-      ctx.lineWidth = 2.5;
-      ctx.shadowColor = ctx.strokeStyle;
-      ctx.shadowBlur = 10 + pulse * 10;
-      ctx.stroke();
-    }
-    ctx.beginPath();
-    ctx.arc(center, orbitY, 7 + pulse * 18, 0, Math.PI * 2);
-    ctx.fillStyle = EMERALD;
-    ctx.shadowColor = EMERALD;
-    ctx.fill();
-    ctx.shadowBlur = 0;
-  }
-
-  function drawSpectrum(baseline) {
-    const step = CONTENT_WIDTH / BAR_COUNT;
-    ctx.beginPath();
-    for (let i = 0; i < BAR_COUNT; i++) {
-      const end = Math.max(bandEdges[i] + 1, bandEdges[i + 1]);
-      let peak = 0;
-      for (let bin = bandEdges[i]; bin < end; bin++) peak = Math.max(peak, spectrum[bin]);
-      const strength = (peak / 255) ** 1.8;
-      const height = 3 + strength * (video ? 132 : 110);
-      const x = INSET + i * step + (step - 8) / 2;
-      ctx.roundRect(x, baseline - height, 8, height, 3);
-      if (!video) ctx.roundRect(x, baseline + 7, 8, 3 + strength * 73, 3);
-    }
-    ctx.fillStyle = oled;
-    ctx.shadowColor = CYAN;
-    ctx.shadowBlur = 12;
-    ctx.fill();
-    ctx.shadowBlur = 0;
-  }
-
-  return (elapsed, progress) => {
-    analyser.getByteFrequencyData(spectrum);
+  function readAudio() {
     analyser.getFloatTimeDomainData(waveform);
     let power = 0;
     for (const sample of waveform) power += sample * sample;
     const energy = Math.min(1, Math.sqrt(power / waveform.length) * 3.6);
     pulse += (energy - pulse) * (energy > pulse ? 0.45 : 0.16);
+    if (style === 'pure') return;
 
-    if (video) {
-      drawCameraCover(ctx, video);
-      ctx.fillStyle = shade;
-      ctx.fillRect(0, 548, FRAME_WIDTH, FRAME_HEIGHT - 548);
-    } else {
-      drawOrbit(elapsed);
-      drawDetails(center, titleLines.length ? 281 : 244, 'center');
+    analyser.getByteFrequencyData(spectrum);
+    for (let i = 0; i < bands.length; i++) {
+      const end = Math.max(bandEdges[i] + 1, bandEdges[i + 1]);
+      let peak = 0;
+      for (let bin = bandEdges[i]; bin < end; bin++) peak = Math.max(peak, spectrum[bin]);
+      bands[i] = (peak / 255) ** 1.6;
     }
-    drawBrand();
-    if (titleLines.length) {
-      ctx.textAlign = video ? 'left' : 'center';
-      ctx.font = TITLE_FONT;
-      ctx.fillStyle = '#f0f8f7';
-      const lastBaseline = video ? 970 : 250;
-      titleLines.forEach((line, index) => {
-        const baseline = lastBaseline - 62 * (titleLines.length - 1 - index);
-        ctx.fillText(line, video ? INSET : center, baseline, CONTENT_WIDTH);
+  }
+
+  function readTimeline(elapsed) {
+    while (eventIndex < events.length && events[eventIndex].timeSec <= elapsed) {
+      const event = events[eventIndex++];
+      active.push(event);
+      if (style === 'cosmos') {
+        hue = ROOT_HUES[event.rootPc] ?? ROOT_HUES[0];
+        if (!event.continued) bursts.push({ ...event, hue, index: eventIndex });
+      }
+    }
+    active = active.filter(event => elapsed < event.endSec);
+    bursts = bursts.filter(event => elapsed - event.timeSec < 1.15);
+    return active.at(-1)?.label ?? '';
+  }
+
+  function drawTitle(lastBaseline) {
+    titleLines.forEach((line, index) => {
+      const baseline = lastBaseline - 62 * (titleLines.length - 1 - index);
+      text(ctx, line, CENTER_X, baseline, TITLE_FONT, '#f0f8f7');
+    });
+  }
+
+  function drawBrand() {
+    panel(ctx, INSET, 51, 121, 40, 9, '#111419c7');
+    text(ctx, 'ÓRBITA', INSET + 60, 78, '800 19px monospace', '#f0f8f7');
+  }
+
+  function drawSpectrum(x, y, width, height, color) {
+    const step = width / bands.length;
+    ctx.fillStyle = color;
+    for (let i = 0; i < bands.length; i++) {
+      const bar = 2 + bands[i] * height;
+      ctx.fillRect(x + i * step, y - bar, step * 0.52, bar);
+    }
+  }
+
+  function drawPure(label) {
+    if (video) return;
+    drawTitle(495);
+    text(ctx, label, CENTER_X, 570, '500 32px monospace', '#a4baaf');
+    ctx.beginPath();
+    for (let i = 0; i <= 256; i++) {
+      const x = INSET + CONTENT_WIDTH * i / 256;
+      const sample = waveform[Math.round((waveform.length - 1) * i / 256)];
+      const y = 671 + sample * 58 * Math.sin(Math.PI * i / 256);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.strokeStyle = '#78c6ab';
+    ctx.lineWidth = 1.8;
+    ctx.stroke();
+  }
+
+  function drawKeys(label) {
+    const y = video ? 842 : 601;
+    if (!video) drawTitle(493);
+    else drawTitle(y - 28);
+    panel(ctx, INSET, y, CONTENT_WIDTH, 355, 23, CHASSIS, '#536067');
+    panel(ctx, INSET + 18, y + 18, CONTENT_WIDTH - 36, 109, 10, '#071410', '#2c5445');
+    text(ctx, label, INSET + 42, y + 86, TITLE_FONT, EMERALD, 'left', 236);
+    drawSpectrum(347, y + 105, 268, 64, oled);
+
+    const sounding = new Set(active.flatMap(event => event.pitchClasses));
+    const activeDegrees = new Set(active.map(event => event.degreeIndex));
+    KEY_ROWS.forEach((row, rowIndex) => row.forEach((index, column) => {
+      const degree = keyboardDegrees[index];
+      const lit = activeDegrees.has(index) || sounding.has(degree?.pitchClass);
+      const x = INSET + 26 + column * 146 + (rowIndex === 0 ? 73 : 0);
+      const top = y + 145 + rowIndex * 101;
+      const color = sounding.has(degree?.pitchClass) ? EMERALD : AMBER;
+      if (lit) {
+        ctx.shadowColor = color;
+        ctx.shadowBlur = 16;
+      }
+      panel(ctx, x, top, 134, 82, 11, lit ? '#123b2b' : '#1b1d22', lit ? color : '#42464d');
+      ctx.shadowBlur = 0;
+      panel(ctx, x + 49, top + 10, 35, 3, 2, lit ? color : '#494c50');
+      text(ctx, degree?.chordLabel ?? '', x + 67, top + 57, MONO_FONT, lit ? color : '#c3c8cd');
+    }));
+  }
+
+  function drawOrbit(label) {
+    const cy = video ? 898 : 699;
+    const radius = video ? 196 : 245;
+    if (!video) drawTitle(315);
+    else text(ctx, titleLines.join(' '), CENTER_X, 1212, '700 32px system-ui, sans-serif', '#f0f8f7');
+    const halo = ctx.createRadialGradient(CENTER_X, cy, 32, CENTER_X, cy, radius + 95);
+    halo.addColorStop(0, video ? '#07100e92' : '#102822');
+    halo.addColorStop(0.68, '#226c4b31');
+    halo.addColorStop(0.84, '#cc7a182c');
+    halo.addColorStop(1, '#14151800');
+    ctx.fillStyle = halo;
+    ctx.fillRect(CENTER_X - radius - 95, cy - radius - 95, (radius + 95) * 2, (radius + 95) * 2);
+
+    for (let ring = 1; ring <= 5; ring++) {
+      circle(ctx, CENTER_X, cy, radius * ring / 5);
+      ctx.strokeStyle = ring % 2 === 0 ? '#fbbf2466' : '#34d39971';
+      ctx.lineWidth = ring === 5 ? 1.8 : 1;
+      ctx.stroke();
+    }
+
+    for (const event of active) {
+      if (event.pitchClasses.length < 2) continue;
+      ctx.beginPath();
+      event.pitchClasses.forEach((pc, i) => {
+        const [x, y] = pointOnRing(pitchAngle(pc), radius, cy);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
       });
+      if (event.pitchClasses.length > 2) ctx.closePath();
+      ctx.strokeStyle = '#a1ffcf';
+      ctx.lineWidth = 2.5 + pulse * 2;
+      ctx.shadowColor = EMERALD;
+      ctx.shadowBlur = 15;
+      ctx.stroke();
     }
-    drawSpectrum(video ? 1168 : 988);
-    ctx.fillStyle = '#b9d8e040';
-    ctx.fillRect(INSET, 1218, CONTENT_WIDTH, 3);
-    ctx.fillStyle = oled;
-    ctx.fillRect(INSET, 1218, CONTENT_WIDTH * progress, 3);
+    ctx.shadowBlur = 0;
+
+    const sounding = new Set(active.flatMap(event => event.pitchClasses));
+    chromaticLabels.forEach((name, pc) => {
+      const angle = pitchAngle(pc);
+      const [x, y] = pointOnRing(angle, radius, cy);
+      const [lx, ly] = pointOnRing(angle, radius + 29, cy);
+      const lit = sounding.has(pc);
+      circle(ctx, x, y, lit ? 8 + pulse * 7 : 3.5);
+      ctx.fillStyle = lit ? (pc === active.at(-1)?.rootPc ? AMBER : EMERALD) : '#548777';
+      ctx.shadowColor = ctx.fillStyle;
+      ctx.shadowBlur = lit ? 23 : 0;
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      text(ctx, name, lx, ly + 7, '600 20px monospace', lit ? '#ffffff' : '#baccc5');
+    });
+
+    ctx.strokeStyle = oled;
+    ctx.lineWidth = 2.3;
+    ctx.beginPath();
+    bands.forEach((value, i) => {
+      const angle = Math.PI * (0.16 + 0.68 * i / (bands.length - 1));
+      const [x1, y1] = pointOnRing(angle, radius + 56, cy);
+      const [x2, y2] = pointOnRing(angle, radius + 58 + value * 35, cy);
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+    });
+    ctx.stroke();
+    panel(ctx, CENTER_X - 116, cy - 34, 232, 68, 10, '#071410e5', '#447362');
+    text(ctx, label, CENTER_X, cy + 17, '800 48px monospace', '#d6fff3', 'center', 209);
+  }
+
+  function drawTunnel(elapsed, cy) {
+    const centerGlow = ctx.createRadialGradient(CENTER_X, cy, 0, CENTER_X, cy, 690);
+    centerGlow.addColorStop(0, hueColor(hue, 26, 0.8));
+    centerGlow.addColorStop(0.6, hueColor(hue + 80, 12, 0.64));
+    centerGlow.addColorStop(1, '#070711');
+    ctx.fillStyle = centerGlow;
+    ctx.fillRect(0, 0, FRAME_WIDTH, FRAME_HEIGHT);
+    for (const star of stars) {
+      const depth = (star.depth + elapsed * star.speed) % 1;
+      const angle = star.angle + elapsed * 0.18;
+      const r = depth ** 2 * 850;
+      const [x, y] = pointOnRing(angle, r, cy);
+      const length = 4 + depth * (10 + pulse * 37);
+      ctx.strokeStyle = hueColor(hue + star.angle * 8, 75, depth * 0.7);
+      ctx.lineWidth = 1 + depth * 2;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x - Math.cos(angle) * length, y - Math.sin(angle) * length);
+      ctx.stroke();
+    }
+  }
+
+  function drawMandala(elapsed, cy) {
+    for (let ring = 0; ring < 4; ring++) {
+      const spin = elapsed * (ring % 2 === 0 ? 0.26 : -0.21) + ring * 0.31;
+      ctx.strokeStyle = hueColor(hue + ring * 43, 66, 0.25 + pulse * 0.42);
+      ctx.lineWidth = 1.5 + pulse * 2;
+      ctx.beginPath();
+      for (let i = 0; i <= 72; i++) {
+        const angle = i / 72 * TAU;
+        const radius = 54 + ring * 68 + (35 + pulse * 53) * Math.cos(12 * angle);
+        const [x, y] = pointOnRing(angle + spin, radius, cy);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+  }
+
+  function drawBurst(event, elapsed, cy) {
+    const age = elapsed - event.timeSec;
+    const velocity = Math.max(0.2, Math.min(1, event.velocity));
+    const fade = 1 - age / 1.15;
+    const [originX, originY] = video
+      ? [event.rootPc % 2 ? FRAME_WIDTH - 46 : 46, 530 + (event.rootPc % 6) * 85]
+      : pointOnRing(pitchAngle(event.rootPc), 105, cy);
+    const radius = 12 + age * (215 + pulse * 120);
+    ctx.lineWidth = 2 + 6 * fade * velocity;
+    for (let ring = 0; ring < 3; ring++) {
+      circle(ctx, originX, originY, radius * (1 + ring * 0.32));
+      ctx.strokeStyle = hueColor(event.hue + ring * 34, 65, fade * velocity * 0.71 / (ring + 1));
+      ctx.stroke();
+    }
+
+    ctx.beginPath();
+    const rayLength = 36 + pulse * 82 + velocity * 45;
+    for (let ray = 0; ray < 12; ray++) {
+      const angle = pitchAngle(event.rootPc) + ray * TAU / 12 + age * 0.35;
+      const reach = radius * 0.68;
+      const length = reach + rayLength * fade * (ray % 2 === 0 ? 1 : 0.44);
+      const dx = Math.cos(angle);
+      const dy = Math.sin(angle);
+      ctx.moveTo(originX + dx * reach, originY + dy * reach);
+      ctx.lineTo(originX + dx * length, originY + dy * length);
+    }
+    ctx.strokeStyle = hueColor(event.hue + 42, 74, fade * velocity * 0.65);
+    ctx.lineWidth = 2 + velocity * 2;
+    ctx.stroke();
+
+    for (let i = 0; i < 24; i++) {
+      const angle = (i / 24 + event.index * 0.381966) * TAU;
+      const speed = 70 + (i * 71 % 185);
+      const travel = age * speed * (0.8 + velocity + pulse * 0.3);
+      const x = originX + Math.cos(angle) * travel;
+      const y = originY + Math.sin(angle) * travel - 22 * age;
+      ctx.fillStyle = hueColor(event.hue + (i % 3) * 44, 72, fade);
+      const size = (2 + i % 4) * fade;
+      if (i % 4 === 0) {
+        ctx.fillRect(x - size * 2, y - 1, size * 4, 2);
+        ctx.fillRect(x - 1, y - size * 2, 2, size * 4);
+      } else {
+        circle(ctx, x, y, size);
+        ctx.fill();
+      }
+    }
+  }
+
+  function drawCosmos(label, elapsed) {
+    const cy = video ? 755 : 650;
+    if (!video) drawTunnel(elapsed, cy);
+    ctx.save();
+    ctx.globalCompositeOperation = 'screen';
+    if (video) {
+      const aura = ctx.createRadialGradient(CENTER_X, 620, 270, CENTER_X, 620, 690);
+      aura.addColorStop(0, hueColor(hue, 60, 0));
+      aura.addColorStop(0.78, hueColor(hue, 57, 0.36 + pulse * 0.30));
+      aura.addColorStop(1, hueColor(hue + 72, 66, 0.59 + pulse * 0.36));
+      ctx.strokeStyle = aura;
+      ctx.lineWidth = 9 + pulse * 21;
+      ctx.strokeRect(7, 7, FRAME_WIDTH - 14, FRAME_HEIGHT - 14);
+    } else {
+      drawMandala(elapsed, cy);
+    }
+    bursts.forEach(event => drawBurst(event, elapsed, cy));
+    ctx.restore();
+
+    ctx.shadowColor = hueColor(hue, 58);
+    ctx.shadowBlur = 20 + 28 * pulse;
+    text(ctx, label, CENTER_X, video ? 1005 : 722, '900 103px system-ui, sans-serif', '#f8f4ff');
+    ctx.shadowBlur = 0;
+    drawTitle(video ? 1091 : 294);
+    drawSpectrum(INSET, 1200, CONTENT_WIDTH, 140, hueColor(hue + 26, 67));
+  }
+
+  return (elapsed, progress) => {
+    let label = '';
+    if (!(video && style === 'pure')) {
+      readAudio();
+      label = readTimeline(elapsed);
+    }
+    if (video) {
+      drawCameraCover(ctx, video, style === 'cosmos' ? 1 + pulse * 0.023 : 1);
+      if (style !== 'pure') {
+        ctx.fillStyle = shade;
+        ctx.fillRect(0, 590, FRAME_WIDTH, FRAME_HEIGHT - 590);
+      }
+    } else {
+      ctx.fillStyle = style === 'keys' ? metal : CHASSIS;
+      ctx.fillRect(0, 0, FRAME_WIDTH, FRAME_HEIGHT);
+    }
+
+    if (style === 'keys') drawKeys(label);
+    else if (style === 'orbit') drawOrbit(label);
+    else if (style === 'cosmos') drawCosmos(label, elapsed);
+    else drawPure(label);
+
+    drawBrand();
+    ctx.fillStyle = '#d7eee347';
+    ctx.fillRect(INSET, 1230, CONTENT_WIDTH, 2);
+    ctx.fillStyle = style === 'cosmos' ? hueColor(hue, 65) : EMERALD;
+    ctx.fillRect(INSET, 1230, CONTENT_WIDTH * progress, 2);
   };
 }
 

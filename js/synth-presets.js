@@ -628,6 +628,12 @@ export function spawnSingleNoteVoice(midiNote, preset, startTime, velocity = 1.0
   };
 }
 
+let noteEventObserver = null;
+
+export function setNoteEventObserver(fn) {
+  noteEventObserver = typeof fn === 'function' ? fn : null;
+}
+
 /**
  * Dispara un conjunto de notas MIDI aplicando el Humanizador (0 a 3 LEDs cian)
  * Devuelve un handle { stop(when) } para liberar todas las voces al soltar la tecla.
@@ -673,10 +679,23 @@ export function startHumanizedVoiceGroup(midiNotes, options = {}) {
     return spawnSingleNoteVoice(midi, preset, noteStart, noteVel, destination, fixedDur);
   });
 
+  let cancelNoteEvent;
+  if (notes.length && noteEventObserver) {
+    try {
+      cancelNoteEvent = noteEventObserver({ notes: [...notes], when: baseTime, duration: fixedDur || 0.45, velocity: baseVel });
+    } catch (_) {
+      // Mantener la reproducción aunque falle un consumidor de eventos.
+    }
+  }
+
   return {
     endsAt: fixedDur === null ? null : Math.max(...voices.map(voice => voice.endsAt)),
     stop(when = null, forceImmediate = false) {
       voices.forEach(v => v.stop(when, forceImmediate));
+      if (forceImmediate && ctx.currentTime < baseTime && typeof cancelNoteEvent === 'function') {
+        try { cancelNoteEvent(); } catch (_) {}
+        cancelNoteEvent = null;
+      }
     }
   };
 }

@@ -3,7 +3,7 @@
  * y Looper Cuantizado con Precuenta 1-2-3-4 y Cero Desfase (REGLAS_NO_ROMPER.md #2).
  */
 
-import { ensureAudioUnlocked, triggerMetronomeClick } from './audio-core.js';
+import { ensureAudioUnlocked, getDrumDestination, triggerMetronomeClick } from './audio-core.js';
 import { getState, setState } from './state.js';
 import { getActiveDrumPattern, triggerDrumPatternStep } from './drum-engine.js';
 import { getPresetById, startHumanizedVoiceGroup } from './synth-presets.js';
@@ -19,6 +19,7 @@ let running = false;
 let schedulerTimer = null;
 let rafId = null;
 const scheduledMetronomeClicks = new Set();
+let transportDrumOutput = null;
 
 // Estado temporal del reloj maestro
 let transportOriginTime = 0; // audioCtx.currentTime exacto del paso 0
@@ -98,6 +99,26 @@ export function getTransportSnapshot() {
   };
 }
 
+export function getArmedTransportSnapshot() {
+  const st = getState();
+  return {
+    drumPlaying: Boolean(st.drumPlaying),
+    looperPlaying: st.looperState === 'playing',
+    progressionPlaying: Boolean(st.progressionPlaying)
+  };
+}
+
+export function startArmedTransportAt(originAudioTime, armed) {
+  const drumPlaying = Boolean(armed.drumPlaying);
+  const looperPlaying = armed.looperPlaying && loopEvents.length > 0 && loopDurationSec > 0;
+  const progressionPlaying = Boolean(armed.progressionPlaying && getState().progressionIndex >= 0);
+  if (!drumPlaying && !looperPlaying && !progressionPlaying) return;
+
+  if (looperPlaying) resetLooperTriggers();
+  setState({ drumPlaying, looperState: looperPlaying ? 'playing' : 'idle', progressionPlaying });
+  startTransportAt(originAudioTime);
+}
+
 /**
  * Comprueba si el transporte debe seguir corriendo o pararse por completo
  * REGLA 1: Sin batería, looper ni progresión activos, running debe ser false.
@@ -119,6 +140,7 @@ function startTransportAt(originAudioTime) {
   stopSchedulerOnly();
   if (running) {
     stopScheduledMetronomeClicks();
+    stopTransportDrums();
     stopProgressionPlaybackEngine();
   }
   const ctx = ensureAudioUnlocked();
@@ -151,6 +173,7 @@ function stopTransportInternal() {
   countInActive = false;
   currentStepMod16 = 0;
   stopScheduledMetronomeClicks();
+  stopTransportDrums();
   stopAllLooperVoices();
   stopProgressionPlaybackEngine();
   setState({ currentBeat: -1, currentStep: 0 });
@@ -174,6 +197,11 @@ function scheduleMetronomeClick(when, isDownbeat) {
 function stopScheduledMetronomeClicks() {
   for (const click of scheduledMetronomeClicks) click.stop();
   scheduledMetronomeClicks.clear();
+}
+
+function stopTransportDrums() {
+  transportDrumOutput?.disconnect();
+  transportDrumOutput = null;
 }
 
 function stopAllLooperVoices() {
@@ -218,8 +246,12 @@ function scheduleSingleStep(absStepIndex, stepTime) {
 
   // 2. BATERÍA 4/4: Solo si drumPlaying está activo
   if (st.drumPlaying) {
-    const pattern = getActiveDrumPattern();
-    triggerDrumPatternStep(pattern, step16, stepTime);
+    // Un bus seco propio permite silenciar también los golpes que el reloj ya ha programado.
+    if (!transportDrumOutput) {
+      transportDrumOutput = ensureAudioUnlocked().createGain();
+      transportDrumOutput.connect(getDrumDestination());
+    }
+    triggerDrumPatternStep(getActiveDrumPattern(), step16, stepTime, transportDrumOutput);
   }
 
   // 3. ACOMPAÑAMIENTO AUTOMÁTICO (1..9) en fase con el reloj maestro
@@ -323,7 +355,9 @@ function startVisualLoop() {
  */
 export function toggleDrumPlayback() {
   ensureAudioUnlocked();
-  setState({ drumPlaying: !getState().drumPlaying });
+  const drumPlaying = !getState().drumPlaying;
+  if (!drumPlaying) stopTransportDrums();
+  setState({ drumPlaying });
   evaluateTransportLifecycle();
 }
 
@@ -525,15 +559,19 @@ export function pressLooperPlayStop() {
 
   // Si está en idle y hay un bucle grabado, reproducirlo desde el principio
   if (st.looperState === 'idle' && loopDurationSec > 0 && loopEvents.length > 0) {
-    loopEvents.forEach(ev => {
-      ev.lastTriggeredCycle = -1;
-      ev.lastTriggeredStep = -1;
-    });
+    resetLooperTriggers();
     setState({ looperState: 'playing' });
     if (!running) {
       startTransportAt(ctx.currentTime + 0.01);
     }
   }
+}
+
+function resetLooperTriggers() {
+  loopEvents.forEach(ev => {
+    ev.lastTriggeredCycle = -1;
+    ev.lastTriggeredStep = -1;
+  });
 }
 
 function stopLooperActivity() {

@@ -3,6 +3,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 import { HELP_CONTENT } from '../js/help-content.js';
 import { t } from '../js/i18n.js';
+import { VIDEO_STYLES } from '../js/short-video.js';
 import { TUTORIAL_STEPS } from '../js/tutorial.js';
 
 const root = new URL('../', import.meta.url);
@@ -21,7 +22,7 @@ test('los IDs usados por la interfaz y las referencias SVG existen y son únicos
     'rev-led-': [1, 2, 3],
     'echo-led-': [1, 2, 3],
     'chorus-led-': [1, 2, 3],
-    'mic-filter-led-': [1, 2, 3]
+    'filter-led-': [1, 2, 3]
   };
   const sources = (await readdir(new URL('js/', root)))
     .filter(name => name.endsWith('.js'))
@@ -84,7 +85,29 @@ test('el teclado Custom reproduce el zigzag del chasis y la PWA usa la caché ac
     .map(file => readFile(new URL(file, root), 'utf8')));
   assert.match(css, /html, body\s*\{[^}]*height:\s*100dvh;[^}]*overflow:\s*clip/);
   assert.match(tokens, /--chassis-bg:\s*#141518;/);
-  assert.match(serviceWorker, /const CACHE_NAME = 'orbita-v2-hw-v2';/);
+  assert.match(serviceWorker, /const CACHE_NAME = 'orbita-v2-hw-v3';/);
+});
+
+test('el estudio muestra el filtro, la onda interactiva y los cuatro estilos de vídeo', async () => {
+  const studio = html.slice(html.indexOf('id="modal-demo-result"'));
+  assert.match(studio, /id="btn-voice-filter"[\s\S]*?id="filter-led-1"[\s\S]*?id="filter-led-2"[\s\S]*?id="filter-led-3"/);
+  assert.equal(ids.has('btn-config-mic-filter'), false);
+  assert.match(studio, /id="demo-waveform-canvas"[\s\S]*?aria-describedby="studio-wave-hint"/);
+  const styles = studio.match(/id="video-style-grid"[^>]*>([\s\S]*?)<\/div>/)[1];
+  assert.deepEqual([...styles.matchAll(/<button[^>]+id="btn-video-style-([\w-]+)"[^>]+data-video-style="\1"/g)]
+    .map(([, style]) => style), VIDEO_STYLES);
+  const css = await readFile(new URL('css/modals.css', root), 'utf8');
+  assert.match(css, /\.studio-fx-grid\s*\{[^}]*grid-template-columns:\s*repeat\(3, 1fr\)/);
+  assert.match(css, /\.demo-waveform-canvas\s*\{[^}]*cursor:\s*pointer;[^}]*touch-action:\s*none/);
+});
+
+test('la captura de maqueta abre el micro crudo y aplica un pasaaltos fijo de 40 Hz', async () => {
+  const source = await readFile(new URL('js/demo-recorder.js', root), 'utf8');
+  const start = source.slice(source.indexOf('export async function startDemoRecording'),
+    source.indexOf('export async function stopDemoRecording'));
+  assert.match(start, /getUserMedia\(\{\s*audio:\s*\{\s*echoCancellation:\s*false,\s*noiseSuppression:\s*false,\s*autoGainControl:\s*false\s*\}\s*\}\)/);
+  assert.match(start, /micHighpass\.type\s*=\s*'highpass';\s*micHighpass\.frequency\.setValueAtTime\(40,/);
+  assert.doesNotMatch(start, /micFilterLevel|gateThreshold/);
 });
 
 test('el tutorial tiene siete objetivos reales y explica el detector en ambos idiomas', () => {
@@ -123,4 +146,6 @@ test('la ayuda bilingüe incluye una sección dedicada a la estadística de nota
   assert.match(en.topics.flat().join(' '), /frequencies.*presence.*rolling 20-second window.*red.*orange.*yellow.*green.*major or minor.*reference pitch.*voice/i);
   assert.match(HELP_CONTENT.es.flatMap(({ topics }) => topics.flat()).join(' '), /zigzag.*Mayor \(M.*menor \(m.*octava 0.*Melodía/);
   assert.match(HELP_CONTENT.en.flatMap(({ topics }) => topics.flat()).join(' '), /zigzag.*Major \(M.*minor \(m.*octave 0.*Melody/);
+  assert.match(HELP_CONTENT.es.flatMap(({ topics }) => topics.flat()).join(' '), /Filtro de voz a posteriori.*0 a 3 LEDs.*Toca o haz clic en la onda.*Puro.*Teclado.*Órbita.*Cosmos/);
+  assert.match(HELP_CONTENT.en.flatMap(({ topics }) => topics.flat()).join(' '), /Voice filter after recording.*0 to 3 emerald LEDs.*Tap or click the waveform.*Pure.*Keys.*Orbit.*Cosmos/);
 });
