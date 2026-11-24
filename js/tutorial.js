@@ -6,6 +6,7 @@ import { getState, setState, subscribe } from './state.js';
 export const TUTORIAL_STEPS = Object.freeze([
   '#keyboard-surface',
   '.module-tonality',
+  '#btn-open-tonality',
   '#progression-widget',
   '#control-deck',
   '#btn-open-sessions, #btn-open-config',

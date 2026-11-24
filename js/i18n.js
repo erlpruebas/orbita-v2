@@ -8,12 +8,17 @@ import { CUSTOM_SCALE_PRESETS } from './theory.js';
 export const INTERVAL_LABELS = Object.freeze({
   es: Object.freeze([
     'Unísono (1ª)', '2ª menor', '2ª mayor', '3ª menor', '3ª mayor', '4ª justa',
-    '4ª aum / 5ª dism', '5ª justa', '6ª menor', '6ª mayor', '7ª menor', '7ª mayor'
+    'Tritono', '5ª justa', '6ª menor', '6ª mayor', '7ª menor', '7ª mayor'
   ]),
   en: Object.freeze([
     'Unison (1st)', 'Minor 2nd', 'Major 2nd', 'Minor 3rd', 'Major 3rd', 'Perfect 4th',
     'Tritone', 'Perfect 5th', 'Minor 6th', 'Major 6th', 'Minor 7th', 'Major 7th'
   ])
+});
+
+export const SHORT_INTERVAL_LABELS = Object.freeze({
+  es: Object.freeze(['1ª', '2ªm', '2ªM', '3ªm', '3ªM', '4ªJ', 'TT', '5ªJ', '6ªm', '6ªM', '7ªm', '7ªM']),
+  en: Object.freeze(['1st', 'm2', 'M2', 'm3', 'M3', 'P4', 'TT', 'P5', 'm6', 'M6', 'm7', 'M7'])
 });
 
 const messages = {
@@ -91,15 +96,14 @@ const messages = {
   'custom.title': ['Teclado Custom', 'Custom Keyboard'],
   'custom.edit': ['Editar escala Custom', 'Edit custom scale'],
   'custom.instructions': [
-    'Elige el intervalo desde la tónica y la cualidad del acorde para cada grado.',
-    'Choose the interval from the tonic and the chord quality for each degree.'
+    'Ajusta el intervalo con ▲ y ▼, alterna entre Mayor (M) y menor (m) y escucha el acorde con ▶.',
+    'Adjust the interval with ▲ and ▼, toggle Major (M) or minor (m), and preview the chord with ▶.'
   ],
   'custom.degree': ['Grado {roman}', 'Degree {roman}'],
   'custom.interval': ['Intervalo', 'Interval'],
-  'custom.quality': ['Cualidad del acorde', 'Chord quality'],
   'custom.quality.M': ['Mayor', 'Major'],
   'custom.quality.m': ['Menor', 'Minor'],
-  'custom.quality.dim': ['Disminuido', 'Diminished'],
+  'custom.toggleQuality': ['Cambiar cualidad del acorde ({quality})', 'Toggle chord quality ({quality})'],
   'custom.presets': ['Preajustes de escala', 'Scale presets'],
   'custom.applyPreset': ['Aplicar {preset}', 'Apply {preset}'],
   'custom.useScale': ['Usar escala Custom', 'Use custom scale'],
@@ -233,14 +237,19 @@ const messages = {
   'tutorial.1.body': ['Toca las siete teclas para disparar acordes o notas. Mientras mantienes una tecla, desliza el dedo en vertical para controlar el filtro, el volumen o la distorsión con el eje Y.', 'Play chords or notes on the seven keys. Hold a key and slide vertically to control the filter, volume or drive with the Y axis.'],
   'tutorial.2.title': ['Elige la tonalidad', 'Choose a key'],
   'tutorial.2.body': ['Usa las flechas para cambiar la tónica. El botón alterna entre M (mayor), m (menor) y la llave de Custom para tus propios siete grados.', 'Use the arrows to change the tonic. The mode button cycles through M (major), m (minor) and the Custom wrench for your own seven degrees.'],
-  'tutorial.3.title': ['Progresiones populares', 'Popular progressions'],
-  'tutorial.3.body': ['Elige una de las 16 progresiones con ▲ y ▼. Pulsa ▶ para tocarla a los BPM actuales. Cada grado se ilumina durante su compás y la secuencia se lee en el OLED derecho.', 'Choose one of 16 progressions with ▲ and ▼. Press ▶ to play it at the current tempo. Each degree lights up for its bar and the right OLED shows the sequence.'],
-  'tutorial.4.title': ['Panel de control', 'Control deck'],
-  'tutorial.4.body': ['Elige el sonido, un acompañamiento y la batería. Pulsa REC en el looper para grabar tras la precuenta 1-2-3-4 que marcan los cuatro LED.', 'Choose a sound, accompaniment and drum pattern. Press REC on the looper to record after the 1-2-3-4 count-in shown by the four LEDs.'],
-  'tutorial.5.title': ['Banco, configuración y canciones', 'Bank, settings and songs'],
-  'tutorial.5.body': ['En el engranaje eliges tus 9 favoritos entre 50 y abres CONFIG para editar Custom, cambiar el idioma o consultar la ayuda. En la carpeta guardas canciones con su bucle.', 'Use the gear to choose 9 favorites from 50 and open SETTINGS to edit Custom, change language or read the help. Save songs and their loops in the folder.'],
-  'tutorial.6.title': ['Graba una maqueta', 'Record a demo'],
-  'tutorial.6.body': ['El micrófono graba música y voz en dos pistas. Ajusta el filtro de micro y la cámara frontal desde CONFIG. Al parar puedes recortar la mezcla y crear un vídeo corto 9:16.', 'The microphone button records music and vocals on two tracks. Set the mic filter and front camera in SETTINGS. Stop to trim the mix and create a 9:16 short video.'],
+  'tutorial.3.title': ['𝄞 Detecta la tonalidad', '𝄞 Detect the key'],
+  'tutorial.3.body': [
+    'Pulsa la Clave de Sol 𝄞, abre el micrófono y concede el permiso. Canta o toca hasta 20 segundos. El mapa de calor muestra cuánto usas cada nota, desde rojo (presencia mínima) hasta verde (dominante). Aplica la tonalidad mayor o menor estimada con un toque.',
+    'Tap the treble clef 𝄞, turn on the microphone and allow access. Sing or play for up to 20 seconds. The heat map shows how often each note occurs, from red (minimal presence) to green (dominant). Apply the estimated major or minor key with one tap.'
+  ],
+  'tutorial.4.title': ['Progresiones populares', 'Popular progressions'],
+  'tutorial.4.body': ['Elige una de las 16 progresiones con ▲ y ▼ y pulsa ▶. Los acordes suenan en octava 0. Cambia a Melodía y toca encima en la octava que elijas.', 'Choose one of 16 progressions with ▲ and ▼, then press ▶. The chords play at octave 0. Switch to Melody and play over them in any octave.'],
+  'tutorial.5.title': ['Panel de control', 'Control deck'],
+  'tutorial.5.body': ['Elige el sonido, un acompañamiento y la batería. Pulsa REC en el looper para grabar tras la precuenta 1-2-3-4 que marcan los cuatro LED.', 'Choose a sound, accompaniment and drum pattern. Press REC on the looper to record after the 1-2-3-4 count-in shown by the four LEDs.'],
+  'tutorial.6.title': ['Banco, configuración y canciones', 'Bank, settings and songs'],
+  'tutorial.6.body': ['En el engranaje eliges tus 9 favoritos entre 50 y abres CONFIG para editar Custom, cambiar el idioma o consultar la ayuda. En la carpeta guardas canciones con su bucle.', 'Use the gear to choose 9 favorites from 50 and open SETTINGS to edit Custom, change language or read the help. Save songs and their loops in the folder.'],
+  'tutorial.7.title': ['Graba una maqueta', 'Record a demo'],
+  'tutorial.7.body': ['El micrófono graba música y voz en dos pistas. Ajusta el filtro de micro y la cámara frontal desde CONFIG. Al parar puedes recortar la mezcla y crear un vídeo corto 9:16.', 'The microphone button records music and vocals on two tracks. Set the mic filter and front camera in SETTINGS. Stop to trim the mix and create a 9:16 short video.'],
 
   'help.title': ['Ayuda de ÓRBITA v2', 'ÓRBITA v2 Help'],
   'help.complete': ['Tutorial y ayuda completa', 'Tutorial and full help'],

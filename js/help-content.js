@@ -1,4 +1,4 @@
-/** Seis secciones de ayuda con la misma estructura en ambos idiomas. */
+/** Secciones de ayuda con la misma estructura en ambos idiomas. */
 export const HELP_CONTENT = {
   es: [
     {
@@ -10,11 +10,18 @@ export const HELP_CONTENT = {
       ]
     },
     {
-      title: 'Tonalidad, Custom y Clave de Sol',
+      title: 'Tonalidad y teclado Custom visual',
       topics: [
         ['Tónica y modo', 'Las flechas mueven la tónica por semitonos. M verde es mayor, m cian es menor y la llave ámbar activa Custom. En CONFIG puedes elegir DO RE MI o C D E.'],
-        ['Siete intervalos editables', 'Parte de uno de los ocho presets. Cada grado tiene un intervalo de 0 a 11 semitonos desde la tónica y un acorde mayor, menor o disminuido. Usa ▶ para oír la tecla con el sonido actual. Al cambiar la tónica se transportan los siete grados.'],
-        ['Clave de Sol', 'Abre el detector, activa el micrófono y canta o toca durante la ventana de 20 segundos. Rojo y naranja muestran notas menos presentes. Amarillo y verde señalan las más frecuentes y dominantes. Escucha referencias en las doce teclas cromáticas y aplica la propuesta mayor o menor.']
+        ['Siete teclas editables', 'En CONFIG, elige uno de los ocho presets para configurar todo el teclado en zigzag. En cada tecla, ▲ y ▼ suben o bajan el intervalo desde la tónica entre 0 y 11 semitonos. Alterna entre Mayor (M, esmeralda) y menor (m, cian) y usa ▶ para oír el acorde que ves en pantalla. Cada ajuste se aplica de inmediato al teclado principal. Al cambiar la tónica se transportan los siete grados.']
+      ]
+    },
+    {
+      title: '𝄞 Clave de Sol · Detector de tonalidad por estadística de notas',
+      topics: [
+        ['Abre el micrófono', 'Pulsa 𝄞 en la barra superior, toca Abrir micrófono y concede el permiso. Canta o toca una melodía durante unos 20 segundos. El detector mide la frecuencia de las notas y acumula su presencia por cada una de las 12 notas cromáticas a lo largo de una ventana deslizante de 20 segundos. Las muestras más antiguas salen de la ventana a medida que sigues tocando.'],
+        ['Lee el mapa de calor', 'Los colores del teclado cromático muestran la presencia relativa de cada nota. Rojo indica presencia mínima, naranja presencia baja, amarillo una nota frecuente y verde una nota dominante.'],
+        ['Aplica la tonalidad y escucha referencias', 'El detector da más peso a las notas frecuentes y dominantes para estimar la tonalidad mayor o menor más probable. Pulsa Aplicar para llevar la propuesta al teclado principal. Toca cualquiera de las doce teclas cromáticas para oír una nota de referencia y afinar la voz.']
       ]
     },
     {
@@ -22,7 +29,7 @@ export const HELP_CONTENT = {
       topics: [
         ['Banco y pantalla OLED', 'Guarda hasta nueve favoritos de cada banco de 50 sonidos, acompañamientos y baterías. Pulsa una de sus tres casillas OLED para abrir el banco correspondiente.'],
         ['Ritmo y tempo', 'El acompañamiento 0 es Manual. Los patrones 1–9 siguen el grado que tocas. Activa la batería con ▶ y marca el tempo con toques seguidos sobre BPM. El LED cian indica que el metrónomo está habilitado para el transporte o la precuenta.'],
-        ['Progresiones populares', 'Junto a II, ▲ y ▼ recorren 16 secuencias y el 0 indica que no hay ninguna elegida. ▶ arranca la progresión elegida o la primera desde 0. La cuarta casilla OLED muestra el nombre y permite elegir la primera o alternar la reproducción. El teclado ilumina el grado que está sonando.']
+        ['Progresiones en voz independiente', 'Junto a II, ▲ y ▼ recorren 16 secuencias. ▶ arranca la elegida o la primera desde 0. La cuarta casilla OLED muestra su nombre y el teclado ilumina el grado activo. Los acordes de la progresión suenan en octava 0 con o sin patrón de acompañamiento y batería. Cambia a Melodía y elige una octava de −2 a +2 para tocar notas encima.']
       ]
     },
     {
@@ -59,11 +66,18 @@ export const HELP_CONTENT = {
       ]
     },
     {
-      title: 'Key, Custom mode and Treble Clef',
+      title: 'Key and visual Custom Keyboard',
       topics: [
         ['Tonic and mode', 'The arrows move the tonic by semitones. Green M is major, cyan m is minor and the amber wrench activates Custom. Choose DO RE MI or C D E in SETTINGS.'],
-        ['Seven editable intervals', 'Start with one of eight presets. Each degree has an interval of 0–11 semitones from the tonic and a major, minor or diminished chord. Press ▶ to hear the key with the current sound. Changing the tonic transposes all seven degrees.'],
-        ['Treble Clef', 'Open the key detector, turn on the microphone and sing or play during the 20-second window. Red and orange indicate less prominent notes. Yellow and green indicate frequent and dominant notes. Hear reference pitches on the twelve chromatic keys and apply the suggested major or minor key.']
+        ['Seven editable keys', 'In SETTINGS, choose one of eight presets to set up the whole zigzag keyboard. On each key, ▲ and ▼ raise or lower the interval from the tonic between 0 and 11 semitones. Toggle Major (M, emerald) or minor (m, cyan) and press ▶ to hear the displayed chord. Each edit takes effect immediately on the main keyboard. Changing the tonic transposes all seven degrees.']
+      ]
+    },
+    {
+      title: '𝄞 Treble Clef · Key detection from note statistics',
+      topics: [
+        ['Turn on the microphone', 'Tap 𝄞 in the top bar, turn on the microphone and allow access. Sing or play a melody for about 20 seconds. The detector measures pitch frequencies and accumulates the presence of each of the 12 chromatic notes over a rolling 20-second window. Older samples drop out of the window as you continue playing.'],
+        ['Read the heat map', 'The colors on the chromatic keyboard show the relative presence of each note. Red means minimal presence, orange means low presence, yellow means frequent and green means dominant.'],
+        ['Apply the key and hear reference pitches', 'The detector gives more weight to frequent and dominant notes to estimate the most likely major or minor key. Tap Apply to use the suggested key on the main keyboard. Press any of the twelve chromatic keys for a reference pitch to match with your voice.']
       ]
     },
     {
@@ -71,7 +85,7 @@ export const HELP_CONTENT = {
       topics: [
         ['Bank and OLED display', 'Save up to nine favorites each from the 50 sounds, accompaniments and drum patterns. Press one of their three OLED labels to open its bank.'],
         ['Rhythm and tempo', 'Accompaniment 0 is Manual. Patterns 1–9 follow the degree you play. Start the drums with ▶ and tap BPM repeatedly to set the tempo. The cyan LED indicates that the metronome is enabled for transport or count-in.'],
-        ['Popular progressions', 'Beside II, ▲ and ▼ cycle through 16 sequences. A 0 means no progression is selected. ▶ plays the selected progression or starts the first one from 0. The fourth OLED cell shows its name and lets you select the first progression or toggle playback. The keyboard lights up the current degree.']
+        ['Independent progression voice', 'Beside II, ▲ and ▼ cycle through 16 sequences. ▶ plays the selected progression or starts the first one from 0. The fourth OLED cell shows its name and the keyboard lights up the current degree. The progression chords play at octave 0 with or without an accompaniment pattern and drums. Switch to Melody and choose any octave from −2 to +2 to play notes over it.']
       ]
     },
     {

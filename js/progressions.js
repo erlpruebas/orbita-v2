@@ -7,7 +7,7 @@ import { setProgressionAccompanimentDegree } from './accompaniment.js';
 import { toggleProgressionPlayback } from './clock-looper.js';
 import { getState, setState } from './state.js';
 import { startHumanizedVoiceGroup } from './synth-presets.js';
-import { getDegreeTriggerNotes, ROMAN_DEGREES } from './theory.js';
+import { getDiatonicDegrees, ROMAN_DEGREES } from './theory.js';
 
 export const POPULAR_PROGRESSIONS = Object.freeze([
   ['universal_pop', 'Pop Universal', 'Universal Pop', [0, 4, 5, 3], 'Pop', 'Pop'],
@@ -53,16 +53,18 @@ export function onProgressionClockStep(absStepIndex, stepTime) {
     if (voice.endsAt <= now) activeVoices.delete(voice);
   }
 
-  setProgressionAccompanimentDegree(st.accompaniment > 0 ? degreeIndex : null, stepTime);
-  if (st.accompaniment === 0) {
-    const barDur = (60 / st.bpm) * 4;
-    const voice = startHumanizedVoiceGroup(getDegreeTriggerNotes(degreeIndex, st), {
-      when: stepTime,
-      duration: barDur * 0.94,
-      humanize: st.humanize
-    });
-    activeVoices.add(voice);
-  }
+  setProgressionAccompanimentDegree(degreeIndex, stepTime);
+  const degree = getDiatonicDegrees(st.rootSemitone, st.scaleMode, 0, st.customScale, st.notation)[degreeIndex];
+  const barDur = (60 / st.bpm) * 4;
+  const isManual = st.accompaniment === 0;
+  // Con patrón activo, la tríada inicial deja espacio para el resto del arreglo.
+  const voice = startHumanizedVoiceGroup(degree.triadMidi, {
+    when: stepTime,
+    duration: isManual ? barDur * 0.96 : barDur / 4,
+    velocity: isManual ? 0.78 : 0.55,
+    humanize: st.humanize
+  });
+  activeVoices.add(voice);
 
   if (visualCallback) {
     clearTimeout(visualTimer);

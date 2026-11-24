@@ -578,7 +578,7 @@ function getActivePatternId() {
   return pat ? pat.id : 0;
 }
 
-function fireAccompanimentEvent(degreeIndex, eventObj, when, durationSec) {
+function fireAccompanimentEvent(degreeIndex, eventObj, when, durationSec, isProgression = false) {
   const st = getState();
   const preset = getActivePreset();
 
@@ -599,6 +599,7 @@ function fireAccompanimentEvent(degreeIndex, eventObj, when, durationSec) {
   if (looperRecordHook) {
     looperRecordHook({
       degreeIndex,
+      isProgression,
       notes: eventObj.notes,
       presetId: preset.id,
       humanize: effectiveHumanize,
@@ -610,7 +611,7 @@ function fireAccompanimentEvent(degreeIndex, eventObj, when, durationSec) {
   return handle;
 }
 
-function scheduleMasterDegree(degree, entry, patId, stepIndex, stepAudioTime, stepDur) {
+function scheduleMasterDegree(degree, entry, patId, stepIndex, stepAudioTime, stepDur, isProgression = false) {
   if (entry.lastFiredStep === stepIndex && (stepAudioTime - entry.lastFiredTime) < stepDur * 0.85) {
     return null;
   }
@@ -619,7 +620,7 @@ function scheduleMasterDegree(degree, entry, patId, stepIndex, stepAudioTime, st
 
   entry.lastFiredStep = stepIndex;
   entry.lastFiredTime = stepAudioTime;
-  return fireAccompanimentEvent(degree.degreeIndex, ev, stepAudioTime, Math.max(0.06, ev.durSteps * stepDur));
+  return fireAccompanimentEvent(degree.degreeIndex, ev, stepAudioTime, Math.max(0.06, ev.durSteps * stepDur), isProgression);
 }
 
 /**
@@ -627,8 +628,8 @@ function scheduleMasterDegree(degree, entry, patId, stepIndex, stepAudioTime, st
  * En una parada, stepTime es null y se cancelan también las voces ya programadas.
  */
 export function setProgressionAccompanimentDegree(degreeIndex, stepTime = null) {
-  if (progressionDegree !== null && !heldDegrees.has(progressionDegree)) {
-    looperReleaseHook?.(progressionDegree, stepTime);
+  if (progressionDegree !== null) {
+    looperReleaseHook?.(progressionDegree, stepTime, true);
   }
   const now = stepTime !== null && progressionVoices.size > 0 ? ensureAudioUnlocked().currentTime : null;
   for (const voice of progressionVoices) {
@@ -647,18 +648,22 @@ export function onMasterClockStep(stepIndex, stepAudioTime) {
 
   const st = getState();
   if (!st.accompaniment || st.accompaniment <= 0) return;
-  if (heldDegrees.size === 0 && progressionDegree === null) return;
+  const hasProgression = st.progressionPlaying && progressionDegree !== null;
+  if (heldDegrees.size === 0 && !hasProgression) return;
 
-  const degrees = getDiatonicDegrees(st.rootSemitone, st.scaleMode, st.octaveOffset, st.customScale, st.notation);
   const stepDur = getStepDurationSec();
   const patId = getActivePatternId();
   const step = stepIndex % 16;
 
-  for (const [degreeIndex, entry] of heldDegrees.entries()) {
-    if (degrees[degreeIndex]) scheduleMasterDegree(degrees[degreeIndex], entry, patId, step, stepAudioTime, stepDur);
+  if (heldDegrees.size > 0) {
+    const degrees = getDiatonicDegrees(st.rootSemitone, st.scaleMode, st.octaveOffset, st.customScale, st.notation);
+    for (const [degreeIndex, entry] of heldDegrees) {
+      if (degrees[degreeIndex]) scheduleMasterDegree(degrees[degreeIndex], entry, patId, step, stepAudioTime, stepDur);
+    }
   }
-  if (progressionDegree !== null && !heldDegrees.has(progressionDegree)) {
-    const voice = scheduleMasterDegree(degrees[progressionDegree], progressionEntry, patId, step, stepAudioTime, stepDur);
+  if (hasProgression) {
+    const degrees = getDiatonicDegrees(st.rootSemitone, st.scaleMode, 0, st.customScale, st.notation);
+    const voice = scheduleMasterDegree(degrees[progressionDegree], progressionEntry, patId, step, stepAudioTime, stepDur, true);
     if (voice) progressionVoices.add(voice);
   }
 }

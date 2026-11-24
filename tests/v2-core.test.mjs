@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   CUSTOM_SCALE_PRESETS,
+  INTERVAL_ROMANS,
   ROMAN_DEGREES,
   VALID_CUSTOM_QUALITIES,
   formatChordLabel,
@@ -13,11 +14,12 @@ import {
   midiToFreq,
   sanitizeCustomScale
 } from '../js/theory.js';
-import { detectSystemLang, INTERVAL_LABELS, resolveLang, t } from '../js/i18n.js';
+import { detectSystemLang, INTERVAL_LABELS, resolveLang, SHORT_INTERVAL_LABELS, t } from '../js/i18n.js';
 import { POPULAR_PROGRESSIONS, selectProgression, setProgressionVisualCallback } from '../js/progressions.js';
 import { getState, setState } from '../js/state.js';
 import { getDrumDestination, getMasterOutputNode } from '../js/audio-core.js';
 import { getMicFilterConfig } from '../js/demo-recorder.js';
+import { initKeyboardUI } from '../js/ui-keyboard.js';
 import {
   exportLooperSnapshot,
   getDebugTelemetry,
@@ -59,9 +61,11 @@ test('la escala Custom transpone la Cadencia Andaluza de La m a Si m', () => {
   const a = getDiatonicDegrees(9, 'custom', 0, andalusian.degrees);
   const b = getDiatonicDegrees(11, 'custom', 0, andalusian.degrees);
 
-  assert.deepEqual(a.map(degree => degree.chordLabel), ['Lam', 'Si°', 'Do', 'Rem', 'Mi', 'Fa', 'Sol']);
-  assert.deepEqual(b.map(degree => degree.chordLabel), ['Sim', 'Do#°', 'Re', 'Mim', 'Fa#', 'Sol', 'La']);
+  assert.deepEqual(a.map(degree => degree.chordLabel), ['Lam', 'Sim', 'Do', 'Rem', 'Mi', 'Fa', 'Sol']);
+  assert.deepEqual(b.map(degree => degree.chordLabel), ['Sim', 'Do#m', 'Re', 'Mim', 'Fa#', 'Sol', 'La']);
   assert.deepEqual(a.map(degree => degree.roman), ROMAN_DEGREES);
+  assert.deepEqual(a.map(degree => degree.intervalRoman), ['I', 'II', 'bIII', 'IV', 'V', 'bVI', 'bVII']);
+  assert.deepEqual(b.map(degree => degree.intervalRoman), a.map(degree => degree.intervalRoman));
   assert.deepEqual(b.map(degree => degree.intervalSemitones), [0, 2, 3, 5, 7, 8, 10]);
   assert.deepEqual(b.map(degree => degree.triadMidi), a.map(degree => degree.triadMidi.map(note => note + 2)));
 
@@ -70,44 +74,46 @@ test('la escala Custom transpone la Cadencia Andaluza de La m a Si m', () => {
   assert.deepEqual(getDegreeTriggerNotes(4, { ...state, playMode: 'melody' }), [76]);
 });
 
-test('los ocho presets tienen siete intervalos válidos y solo admiten tríadas M, m y dim', () => {
+test('los ocho presets y las escalas guardadas solo producen tríadas M o m', () => {
   const expected = {
-    major: ['0M', '2m', '4m', '5M', '7M', '9m', '11dim'],
-    minor: ['0m', '2dim', '3M', '5m', '7m', '8M', '10M'],
-    andalusian: ['0m', '2dim', '3M', '5m', '7M', '8M', '10M'],
-    harmonic_minor: ['0m', '2dim', '3M', '5m', '7M', '8M', '11dim'],
-    dorian: ['0m', '2m', '3M', '5M', '7m', '9dim', '10M'],
-    mixolydian: ['0M', '2m', '4dim', '5M', '7m', '9m', '10M'],
+    major: ['0M', '2m', '4m', '5M', '7M', '9m', '11m'],
+    minor: ['0m', '2m', '3M', '5m', '7m', '8M', '10M'],
+    andalusian: ['0m', '2m', '3M', '5m', '7M', '8M', '10M'],
+    harmonic_minor: ['0m', '2m', '3M', '5m', '7M', '8M', '11m'],
+    dorian: ['0m', '2m', '3M', '5M', '7m', '9m', '10M'],
+    mixolydian: ['0M', '2m', '4m', '5M', '7m', '9m', '10M'],
     epic_ballad: ['0M', '2m', '4m', '5m', '7M', '8M', '10M'],
-    lydian: ['0M', '2M', '4m', '6dim', '7M', '9m', '11m']
+    lydian: ['0M', '2M', '4m', '6m', '7M', '9m', '11m']
   };
   assert.equal(CUSTOM_SCALE_PRESETS.length, 8);
-  assert.deepEqual(VALID_CUSTOM_QUALITIES, ['M', 'm', 'dim']);
+  assert.deepEqual(VALID_CUSTOM_QUALITIES, ['M', 'm']);
   for (const { id, degrees } of CUSTOM_SCALE_PRESETS) {
     assert.deepEqual(degrees.map(({ semitones, quality }) => `${semitones}${quality}`), expected[id]);
   }
 
   const cleaned = sanitizeCustomScale([
     { semitones: 11, quality: 'M7' },
-    { semitones: -1, quality: 'dim' },
+    { semitones: -1, quality: 'M' },
     { semitones: 1.5, quality: 'sus4' },
     { semitones: 12, quality: 'aug' },
-    null,
+    { semitones: 8, quality: 'dim' },
     { semitones: 0, quality: 'm' },
     { semitones: '3', quality: '7' },
     { semitones: 0, quality: 'M' }
   ]);
   assert.deepEqual(cleaned, [
     { semitones: 11, quality: 'M' },
-    { semitones: 2, quality: 'dim' },
+    { semitones: 2, quality: 'M' },
     { semitones: 4, quality: 'm' },
     { semitones: 5, quality: 'M' },
-    { semitones: 7, quality: 'M' },
+    { semitones: 8, quality: 'm' },
     { semitones: 0, quality: 'm' },
-    { semitones: 11, quality: 'dim' }
+    { semitones: 11, quality: 'm' }
   ]);
   assert.deepEqual(sanitizeCustomScale(null), CUSTOM_SCALE_PRESETS[0].degrees);
   assert.notEqual(sanitizeCustomScale(null)[0], CUSTOM_SCALE_PRESETS[0].degrees[0]);
+  assert.deepEqual(getDiatonicDegrees(0, 'M')[6].triadMidi, [71, 74, 78]);
+  assert.deepEqual(getDiatonicDegrees(0, 'm')[1].triadMidi, [62, 65, 69]);
 });
 
 test('la notación solfeo y por letras cambia las etiquetas y conserva el MIDI', () => {
@@ -115,7 +121,7 @@ test('la notación solfeo y por letras cambia las etiquetas y conserva el MIDI',
   assert.equal(getNoteNameTitle(1), 'Do#');
   assert.equal(getNoteNameUpper(13, 'letter'), 'C#');
   assert.equal(getNoteNameTitle(-1, 'letter'), 'B');
-  assert.equal(formatChordLabel(11, 'dim', 'letter'), 'B°');
+  assert.equal(formatChordLabel(11, 'm', 'letter'), 'Bm');
   assert.equal(getRelativePair(9, 'm').combinedLabel, 'Do M / La m');
   assert.equal(getRelativePair(9, 'm', 'letter').combinedLabel, 'C M / A m');
 
@@ -138,7 +144,7 @@ test('el idioma automático detecta es* y usa español si no existe navigator', 
   assert.equal(resolveLang('es'), 'es');
 });
 
-test('las familias de textos, los seis pasos y los doce intervalos están disponibles en español e inglés', () => {
+test('las familias de textos, los siete pasos y los doce intervalos están disponibles en español e inglés', () => {
   const translations = [
     ['header.help', 'Ayuda', 'Help'],
     ['bank.title', 'BANCO 50 → 9', 'BANK 50 → 9'],
@@ -160,24 +166,29 @@ test('las familias de textos, los seis pasos y los doce intervalos están dispon
     assert.equal(t(key, 'es'), es);
     assert.equal(t(key, 'en'), en);
   }
-  for (let step = 1; step <= 6; step++) {
+  for (let step = 1; step <= 7; step++) {
     for (const part of ['title', 'body']) {
       const key = `tutorial.${step}.${part}`;
       assert.notEqual(t(key, 'es'), key);
       assert.notEqual(t(key, 'en'), t(key, 'es'));
     }
   }
-  assert.equal(t('tutorial.progress', 'es', { step: 2, total: 6 }), 'Paso 2 de 6');
-  assert.equal(t('tutorial.progress', 'en', { step: 2, total: 6 }), 'Step 2 of 6');
+  assert.equal(t('tutorial.progress', 'es', { step: 2, total: 7 }), 'Paso 2 de 7');
+  assert.equal(t('tutorial.progress', 'en', { step: 2, total: 7 }), 'Step 2 of 7');
   assert.equal(t('unknown.key', 'en'), 'unknown.key');
   assert.deepEqual(INTERVAL_LABELS.es, [
     'Unísono (1ª)', '2ª menor', '2ª mayor', '3ª menor', '3ª mayor', '4ª justa',
-    '4ª aum / 5ª dism', '5ª justa', '6ª menor', '6ª mayor', '7ª menor', '7ª mayor'
+    'Tritono', '5ª justa', '6ª menor', '6ª mayor', '7ª menor', '7ª mayor'
   ]);
   assert.deepEqual(INTERVAL_LABELS.en, [
     'Unison (1st)', 'Minor 2nd', 'Major 2nd', 'Minor 3rd', 'Major 3rd', 'Perfect 4th',
     'Tritone', 'Perfect 5th', 'Minor 6th', 'Major 6th', 'Minor 7th', 'Major 7th'
   ]);
+  assert.deepEqual(INTERVAL_ROMANS, ['I', 'bII', 'II', 'bIII', 'III', 'IV', 'bV', 'V', 'bVI', 'VI', 'bVII', 'VII']);
+  assert.equal(SHORT_INTERVAL_LABELS.es.length, INTERVAL_ROMANS.length);
+  assert.equal(SHORT_INTERVAL_LABELS.en.length, INTERVAL_ROMANS.length);
+  assert.equal(SHORT_INTERVAL_LABELS.es[7], '5ªJ');
+  assert.equal(SHORT_INTERVAL_LABELS.en[7], 'P5');
 });
 
 test('hay 16 progresiones únicas con grados del 0 al 6 y selección circular', context => {
@@ -376,7 +387,7 @@ class TestAudioNode {
   stop(time) { this.stopTimes.push(time); }
 }
 
-test('el audio programa las progresiones a compás y silencia los clics pendientes al parar', async context => {
+test('la progresión mantiene sus tríadas en octava 0 al cambiar a Melodía en +2, con o sin acompañamiento', async context => {
   resetMusicAfter(context);
   let audio;
   replaceGlobal(context, 'window', {
@@ -416,11 +427,12 @@ test('el audio programa las progresiones a compás y silencia los clics pendient
   setProgressionVisualCallback(degree => visual.push(degree));
   const oscillators = () => audio.nodes.filter(node => node.kind === 'oscillator');
   const atTime = (nodes, when) => nodes.filter(node => Math.abs(node.startTime - when) < 1e-9);
+  const pitches = nodes => nodes.filter(node => node.connections[0]?.kind === 'filter').map(node => node.frequency.value);
 
   try {
     setState({
       rootSemitone: 0, scaleMode: 'M', octaveOffset: 0, bpm: 120,
-      accompaniment: 0, playMode: 'melody', humanize: 0, selectedSounds: [3], activeSoundSlot: 0,
+      accompaniment: 0, playMode: 'chord', humanize: 0, selectedSounds: [3], activeSoundSlot: 0,
       reverbLevel: 0, progressionIndex: -1, metronomeEnabled: true
     });
     assert.equal(getDebugTelemetry().running, false);
@@ -433,45 +445,79 @@ test('el audio programa las progresiones a compás y silencia los clics pendient
     assert.deepEqual(getDrumDestination().connections, [getMasterOutputNode()]);
     const reverbSend = audio.nodes.find(node => node.connections.some(target => target.kind === 'convolver'));
     assert.equal(reverbSend.gain.value, 0);
-    const [click, root, harmonic] = atTime(oscillators(), 10.01);
+    const downbeat = atTime(oscillators(), 10.01);
+    const [click, root] = downbeat;
     assert.equal(click.frequency.value, 1320);
-    assert.equal(root.frequency.value, midiToFreq(60));
-    assert.ok(harmonic);
+    assert.deepEqual(pitches(downbeat), [60, 64, 67].map(midiToFreq));
     const [filter] = root.connections;
     const [envGain] = filter.connections;
     const [releaseGain] = envGain.connections;
     assert.equal(envGain.kind, 'gain');
     assert.equal(releaseGain.kind, 'gain');
-    assert.ok(Math.abs(releaseGain.gain.targets[0].time - (10.01 + 2 * 0.94)) < 1e-9);
+    assert.ok(Math.abs(releaseGain.gain.targets[0].time - (10.01 + 2 * 0.96)) < 1e-9);
     await new Promise(resolve => setTimeout(resolve, 30));
     assert.deepEqual(visual, [0]);
+
+    setState({ playMode: 'melody', octaveOffset: 2 });
+    assert.equal(getState().progressionPlaying, true);
+    assert.deepEqual(getDegreeTriggerNotes(4, getState()), [91]);
+    audio.currentTime = 11.94;
+    schedulerTick();
+    const secondDownbeat = atTime(oscillators(), 12.01);
+    assert.deepEqual(pitches(secondDownbeat), [67, 71, 74].map(midiToFreq));
+    const [, secondRoot] = secondDownbeat;
     assert.equal(selectProgression(-1), -1);
     assert.equal(getState().progressionPlaying, false);
     assert.deepEqual(visual, [0, null]);
     assert.equal(getDebugTelemetry().running, false);
     assert.equal(schedulerTick, null);
-    assert.deepEqual(click.connections[0].connections, []);
-    assert.equal(click.stopTimes.at(-1), audio.currentTime);
-    assert.equal(root.stopTimes.at(-1), audio.currentTime + 0.005);
+    assert.deepEqual(secondDownbeat[0].connections[0].connections, []);
+    assert.equal(secondDownbeat[0].stopTimes.at(-1), audio.currentTime);
+    assert.equal(secondRoot.stopTimes.at(-1), audio.currentTime + 0.005);
 
+    const keyEvents = new Map();
+    window.addEventListener = (type, handler) => keyEvents.set(type, handler);
+    const element = { addEventListener() {}, setAttribute() {}, classList: { toggle() {} } };
+    replaceGlobal(context, 'document', {
+      querySelectorAll: () => [], querySelector: () => null,
+      getElementById: id => id === 'loop-progress-fill' ? null : element
+    });
+    initKeyboardUI();
+    const pressKey = type => keyEvents.get(type)({ code: 'KeyZ', preventDefault() {} });
     const beforeAccompany = oscillators().length;
-    setState({ accompaniment: 1, selectedAccompaniments: [0], playMode: 'chord', keyStrike: true, metronomeEnabled: false });
+    const accompanimentStart = audio.currentTime + 0.01;
+    setState({ accompaniment: 1, selectedAccompaniments: [0], keyStrike: true, metronomeEnabled: false });
     toggleProgressionPlayback();
     const firstBeat = oscillators().slice(beforeAccompany);
-    assert.equal(firstBeat.length, 2);
-    assert.equal(atTime(firstBeat, 10.01).length, 2);
-    assert.equal(firstBeat[0].frequency.value, midiToFreq(60));
+    assert.deepEqual(pitches(atTime(firstBeat, accompanimentStart)), [60, 64, 67, 60].map(midiToFreq));
 
-    audio.currentTime = 11.94;
+    const beforeMelody = oscillators().length;
+    pressKey('keydown');
+    assert.deepEqual(pitches(oscillators().slice(beforeMelody)), [midiToFreq(84)]);
+
+    audio.currentTime = accompanimentStart + 0.45;
     schedulerTick();
-    const nextBeat = atTime(oscillators().slice(beforeAccompany), 12.01);
-    assert.equal(nextBeat.length, 2);
-    assert.equal(nextBeat[0].frequency.value, midiToFreq(67));
+    assert.deepEqual(pitches(atTime(oscillators(), accompanimentStart + 0.5)), [midiToFreq(64)]);
+    pressKey('keyup');
+
+    setState({ playMode: 'chord' });
+    pressKey('keydown');
+    audio.currentTime = accompanimentStart + 0.95;
+    schedulerTick();
+    assert.deepEqual(pitches(atTime(oscillators(), accompanimentStart + 1)), [91, 67].map(midiToFreq));
+    pressKey('keyup');
+    setState({ playMode: 'melody' });
+
+    audio.currentTime = accompanimentStart + 1.95;
+    schedulerTick();
+    const nextBeat = atTime(oscillators().slice(beforeAccompany), accompanimentStart + 2);
+    assert.deepEqual(pitches(nextBeat), [67, 71, 74, 67].map(midiToFreq));
 
     toggleDrumPlayback();
     toggleProgressionPlayback();
     assert.equal(getDebugTelemetry().running, true);
     assert.equal(nextBeat[0].stopTimes.at(-1), audio.currentTime + 0.005);
+    assert.equal(nextBeat.at(-1).stopTimes.at(-1), audio.currentTime + 0.005);
     toggleDrumPlayback();
     assert.equal(getDebugTelemetry().running, false);
 

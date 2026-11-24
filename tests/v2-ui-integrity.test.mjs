@@ -76,8 +76,19 @@ test('el OLED tiene cuatro casillas y el estudio expone cámara, título y accio
   assert.match(stripStyles, /grid-template-columns:\s*repeat\(4, minmax\(0, 1fr\)\)/);
 });
 
-test('el tutorial tiene seis objetivos reales y texto completo en ambos idiomas', () => {
-  assert.equal(TUTORIAL_STEPS.length, 6);
+test('el teclado Custom reproduce el zigzag del chasis y la PWA usa la caché actual', async () => {
+  const editor = html.match(/id="custom-scale-editor"[^>]*>\s*((?:<div class="custom-key-row"[^>]*><\/div>\s*)+)/)[1];
+  const rows = [...editor.matchAll(/data-degrees="([\d ]+)"/g)].map(([, degrees]) => degrees.split(' ').map(Number));
+  assert.deepEqual(rows, [[1, 3, 5], [0, 2, 4, 6]]);
+  const [css, tokens, serviceWorker] = await Promise.all(['css/layout.css', 'css/tokens.css', 'sw.js']
+    .map(file => readFile(new URL(file, root), 'utf8')));
+  assert.match(css, /html, body\s*\{[^}]*height:\s*100dvh;[^}]*overflow:\s*clip/);
+  assert.match(tokens, /--chassis-bg:\s*#141518;/);
+  assert.match(serviceWorker, /const CACHE_NAME = 'orbita-v2-hw-v2';/);
+});
+
+test('el tutorial tiene siete objetivos reales y explica el detector en ambos idiomas', () => {
+  assert.equal(TUTORIAL_STEPS.length, 7);
   for (const { target, title, body } of TUTORIAL_STEPS) {
     for (const selector of target.split(', ')) {
       if (selector.startsWith('#')) assert.ok(ids.has(selector.slice(1)), `Falta ${selector}`);
@@ -88,11 +99,16 @@ test('el tutorial tiene seis objetivos reales y texto completo en ambos idiomas'
       assert.notEqual(t(key, 'es'), t(key, 'en'));
     }
   }
+  const detector = TUTORIAL_STEPS.find(({ target }) => target === '#btn-open-tonality');
+  assert.ok(detector);
+  for (const lang of languages) assert.match(t(detector.title, lang), /𝄞/u);
+  assert.match(t(detector.body, 'es'), /micrófono.*canta o toca.*20 segundos.*mapa de calor.*rojo.*verde.*dominante.*aplica/i);
+  assert.match(t(detector.body, 'en'), /microphone.*sing or play.*20 seconds.*heat map.*red.*green.*dominant.*apply/i);
 });
 
-test('la ayuda tiene seis secciones equivalentes en español e inglés', () => {
+test('la ayuda bilingüe incluye una sección dedicada a la estadística de notas y los cuatro colores', () => {
   for (const lang of languages) {
-    assert.equal(HELP_CONTENT[lang].length, 6);
+    assert.equal(HELP_CONTENT[lang].length, 7);
     for (const { title, topics } of HELP_CONTENT[lang]) {
       assert.ok(title.length > 0 && topics.length >= 2);
       for (const [heading, body] of topics) assert.ok(heading.length > 0 && body.length > 0);
@@ -100,4 +116,11 @@ test('la ayuda tiene seis secciones equivalentes en español e inglés', () => {
   }
   assert.deepEqual(HELP_CONTENT.es.map(section => section.topics.length), HELP_CONTENT.en.map(section => section.topics.length));
   assert.notDeepEqual(HELP_CONTENT.es, HELP_CONTENT.en);
+  const es = HELP_CONTENT.es.find(({ title }) => /Clave de Sol.*estadística de notas/i.test(title));
+  const en = HELP_CONTENT.en.find(({ title }) => /Treble Clef.*note statistics/i.test(title));
+  assert.ok(es && en);
+  assert.match(es.topics.flat().join(' '), /frecuencia.*presencia.*ventana deslizante de 20 segundos.*rojo.*naranja.*amarillo.*verde.*mayor o menor.*referencia.*afinar la voz/i);
+  assert.match(en.topics.flat().join(' '), /frequencies.*presence.*rolling 20-second window.*red.*orange.*yellow.*green.*major or minor.*reference pitch.*voice/i);
+  assert.match(HELP_CONTENT.es.flatMap(({ topics }) => topics.flat()).join(' '), /zigzag.*Mayor \(M.*menor \(m.*octava 0.*Melodía/);
+  assert.match(HELP_CONTENT.en.flatMap(({ topics }) => topics.flat()).join(' '), /zigzag.*Major \(M.*minor \(m.*octave 0.*Melody/);
 });

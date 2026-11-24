@@ -89,7 +89,8 @@ function triggerDegreeDown(degreeIndex, sourceKey, initialYNorm = 0.78) {
   addSourceToDegree(degreeIndex, sourceKey);
   updateKeyVisualState(degreeIndex, initialYNorm);
 
-  if (st.accompaniment > 0) {
+  const isProgressionMelody = st.progressionPlaying && st.playMode === 'melody';
+  if (st.accompaniment > 0 && !isProgressionMelody) {
     // Modo con Acompañamiento Automático (1..9): Enganche Instantáneo (Late-Press Catch-Up)
     if (!wasAlreadyPressed) {
       const snap = getTransportSnapshot();
@@ -98,7 +99,7 @@ function triggerDegreeDown(degreeIndex, sourceKey, initialYNorm = 0.78) {
     return;
   }
 
-  // Modo Manual (accompaniment === 0)
+  // Melodía sobre una progresión y teclado manual comparten la ruta de voz directa.
   const notes = getDegreeTriggerNotes(degreeIndex, st);
   const preset = getActivePreset();
   const vel = 0.92;

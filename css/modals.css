@@ -885,33 +885,55 @@
   gap: 4px;
 }
 
-.custom-scale-editor { display: grid; gap: 4px; }
+.custom-scale-editor {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+  max-width: 440px;
+  justify-self: center;
+}
+
+.custom-key-row {
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+}
+
 .custom-degree {
-  display: grid;
-  grid-template-columns: 24px 24px minmax(0, 1fr) 24px auto 27px;
-  align-items: stretch;
-  gap: 4px;
-}
-
-.custom-degree .settings-btn { padding-inline: 0; }
-.custom-roman,
-.custom-interval {
-  display: grid;
-  place-content: center;
+  flex: 0 0 calc((100% - 18px) / 4);
   min-width: 0;
-  border: 1px solid var(--screen-border);
-  border-radius: 5px;
-  background: var(--screen-bg);
-  font: 700 10px/1.2 var(--font-mono);
-  text-align: center;
+  display: grid;
+  gap: 3px;
   padding: 3px;
+  background: var(--chassis-bg);
+  border: 1px solid var(--btn-border);
+  border-bottom: 3px solid var(--chassis-border);
+  border-radius: var(--radius-key);
+  box-shadow: 0 2px 5px rgb(0 0 0 / 55%);
 }
 
-.custom-roman,
-.custom-interval strong { color: var(--led-amber-bright); }
-.custom-interval strong { font-size: 12px; }
-.custom-qualities { display: grid; grid-template-columns: repeat(3, 22px); gap: 2px; }
+.custom-key-display {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: baseline;
+  column-gap: 3px;
+  border: 1px solid var(--screen-border);
+  border-radius: 4px;
+  background: var(--screen-bg);
+  box-shadow: var(--screen-shadow);
+  font: 700 9px/1.3 var(--font-mono);
+  text-align: center;
+  padding: 2px;
+}
+
+.custom-chord { color: var(--led-amber-bright); font-size: 12px; }
+.custom-interval { grid-column: 1 / -1; white-space: nowrap; }
+.custom-key-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 3px; }
+.custom-key-controls .settings-btn { padding-inline: 0; }
+.custom-quality-btn[data-quality="M"] { color: var(--led-emerald-bright); border-color: var(--led-emerald); }
+.custom-quality-btn[data-quality="m"],
 .custom-preview-btn { color: var(--led-cyan-bright); }
+.custom-quality-btn[data-quality="m"] { border-color: var(--led-cyan); }
 
 @media (max-width: 420px) {
   .custom-scale-presets { grid-template-columns: repeat(2, minmax(0, 1fr)); }

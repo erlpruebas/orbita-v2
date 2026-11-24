@@ -3,7 +3,7 @@
  */
 
 import { ensureAudioUnlocked } from './audio-core.js';
-import { INTERVAL_LABELS, resolveLang, t } from './i18n.js';
+import { INTERVAL_LABELS, SHORT_INTERVAL_LABELS, resolveLang, t } from './i18n.js';
 import { getState, setState, subscribe } from './state.js';
 import { CUSTOM_SCALE_PRESETS, getDiatonicDegrees, getNoteNameTitle, getNoteNameUpper, ROMAN_DEGREES } from './theory.js';
 import { exportLooperSnapshot } from './clock-looper.js';
@@ -143,42 +143,46 @@ function initCustomEditor() {
     presets.append(button);
   }
 
-  const editor = document.getElementById('custom-scale-editor');
-  for (const [index, roman] of ROMAN_DEGREES.entries()) {
-    const row = document.createElement('div');
-    row.className = 'custom-degree';
-    row.setAttribute('role', 'group');
-    row.innerHTML = `
-      <span class="custom-roman">${roman}</span>
-      <button type="button" class="hw-btn settings-btn" data-interval-delta="-1">▼</button>
-      <span class="custom-interval"><span></span><strong></strong></span>
-      <button type="button" class="hw-btn settings-btn" data-interval-delta="1">▲</button>
-      <div class="custom-qualities" role="group">
-        <button type="button" class="hw-btn settings-btn" data-quality="M">M</button>
-        <button type="button" class="hw-btn settings-btn" data-quality="m">m</button>
-        <button type="button" class="hw-btn settings-btn" data-quality="dim">°</button>
-      </div>
-      <button type="button" class="hw-btn settings-btn custom-preview-btn">▶</button>`;
-    const updateDegree = patch => {
-      const { customScale } = getState();
-      const next = customScale.map((degree, i) => i === index ? { ...degree, ...patch } : degree);
-      setState({ customScale: next, scaleMode: 'custom' });
-    };
-    row.querySelectorAll('[data-interval-delta]').forEach(button => button.addEventListener('click', () => {
-      const { semitones } = getState().customScale[index];
-      updateDegree({ semitones: (semitones + Number(button.dataset.intervalDelta) + 12) % 12 });
-    }));
-    row.querySelectorAll('[data-quality]').forEach(button => button.addEventListener('click', () => {
-      updateDegree({ quality: button.dataset.quality });
-    }));
-    row.querySelector('.custom-preview-btn').addEventListener('click', () => {
-      stopAllPreviews();
-      const st = getState();
-      const degree = getDiatonicDegrees(st.rootSemitone, 'custom', st.octaveOffset, st.customScale, st.notation)[index];
-      const notes = st.playMode === 'melody' ? [degree.rootMidi] : degree.triadMidi;
-      customPreview = startHumanizedVoiceGroup(notes, { humanize: 0, duration: 0.45, velocity: 0.9 });
-    });
-    editor.append(row);
+  for (const row of document.getElementById('custom-scale-editor').children) {
+    for (const index of row.dataset.degrees.split(' ').map(Number)) {
+      const key = document.createElement('div');
+      key.className = 'custom-degree';
+      key.dataset.degree = index;
+      key.setAttribute('role', 'group');
+      key.innerHTML = `
+        <div class="custom-key-display">
+          <span class="custom-roman">${ROMAN_DEGREES[index]}</span>
+          <strong class="custom-chord"></strong>
+          <span class="custom-interval"></span>
+        </div>
+        <div class="custom-key-controls">
+          <button type="button" class="hw-btn settings-btn" data-interval-delta="1">▲</button>
+          <button type="button" class="hw-btn settings-btn" data-interval-delta="-1">▼</button>
+          <button type="button" class="hw-btn settings-btn custom-quality-btn"></button>
+          <button type="button" class="hw-btn settings-btn custom-preview-btn">▶</button>
+        </div>`;
+      const updateDegree = patch => {
+        const customScale = getState().customScale.slice();
+        customScale[index] = { ...customScale[index], ...patch };
+        setState({ customScale, scaleMode: 'custom' });
+      };
+      key.querySelectorAll('[data-interval-delta]').forEach(button => button.addEventListener('click', () => {
+        const { semitones } = getState().customScale[index];
+        updateDegree({ semitones: (semitones + Number(button.dataset.intervalDelta) + 12) % 12 });
+      }));
+      key.querySelector('.custom-quality-btn').addEventListener('click', () => {
+        const { quality } = getState().customScale[index];
+        updateDegree({ quality: quality === 'M' ? 'm' : 'M' });
+      });
+      key.querySelector('.custom-preview-btn').addEventListener('click', () => {
+        stopAllPreviews();
+        updateDegree();
+        const st = getState();
+        const degree = getDiatonicDegrees(st.rootSemitone, st.scaleMode, st.octaveOffset, st.customScale, st.notation)[index];
+        customPreview = startHumanizedVoiceGroup(degree.triadMidi, { humanize: 0, duration: 0.45, velocity: 0.9 });
+      });
+      row.append(key);
+    }
   }
 }
 
@@ -202,21 +206,21 @@ function renderSettings(st) {
     button.setAttribute('aria-pressed', String(selected));
   });
 
-  const editor = document.getElementById('custom-scale-editor');
-  getDiatonicDegrees(st.rootSemitone, 'custom', st.octaveOffset, st.customScale, st.notation).forEach(degree => {
-    const row = editor.children[degree.degreeIndex];
-    row.setAttribute('aria-label', translate('custom.degree', { roman: degree.roman }));
-    row.querySelector('.custom-interval span').textContent = INTERVAL_LABELS[lang][degree.intervalSemitones];
-    row.querySelector('.custom-interval strong').textContent = degree.chordLabel;
-    setControlLabel(row.querySelector('[data-interval-delta="-1"]'), translate('custom.intervalDown'));
-    setControlLabel(row.querySelector('[data-interval-delta="1"]'), translate('custom.intervalUp'));
-    row.querySelector('.custom-qualities').setAttribute('aria-label', translate('custom.quality'));
-    row.querySelectorAll('[data-quality]').forEach(button => {
-      setControlLabel(button, translate(`custom.quality.${button.dataset.quality}`));
-      button.setAttribute('aria-pressed', String(button.dataset.quality === degree.quality));
-    });
-    setControlLabel(row.querySelector('.custom-preview-btn'), translate('custom.previewDegree', { roman: degree.roman }));
-  });
+  const degrees = getDiatonicDegrees(st.rootSemitone, 'custom', st.octaveOffset, st.customScale, st.notation);
+  for (const key of document.querySelectorAll('#custom-scale-editor .custom-degree')) {
+    const degree = degrees[key.dataset.degree];
+    key.setAttribute('aria-label', translate('custom.degree', { roman: degree.roman }));
+    const interval = key.querySelector('.custom-interval');
+    interval.textContent = `${degree.intervalRoman} · ${SHORT_INTERVAL_LABELS[lang][degree.intervalSemitones]}`;
+    interval.title = INTERVAL_LABELS[lang][degree.intervalSemitones];
+    key.querySelector('.custom-chord').textContent = degree.chordLabel;
+    setControlLabel(key.querySelector('[data-interval-delta="-1"]'), translate('custom.intervalDown'));
+    setControlLabel(key.querySelector('[data-interval-delta="1"]'), translate('custom.intervalUp'));
+    const quality = key.querySelector('.custom-quality-btn');
+    quality.textContent = quality.dataset.quality = degree.quality;
+    setControlLabel(quality, translate('custom.toggleQuality', { quality: translate(`custom.quality.${degree.quality}`) }));
+    setControlLabel(key.querySelector('.custom-preview-btn'), translate('custom.previewDegree', { roman: degree.roman }));
+  }
 
   const settings = document.getElementById('config-settings');
   for (const key of ['lang', 'notation']) {

@@ -1035,7 +1035,7 @@ html, body {
   pointer-events: none;
 }
 
-/* Subtítulo de acorde/octava (Do, Rem, Mim, Fa, Sol, Lam, Si°) */
+/* Subtítulo de acorde/octava (Do, Rem, Mim, Fa, Sol, Lam, Sim) */
 .key-chord {
   font-family: var(--font-mono);
   font-size: clamp(10px, 1.4vw, 12px);

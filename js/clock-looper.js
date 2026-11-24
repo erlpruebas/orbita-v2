@@ -65,8 +65,8 @@ setAccompanimentHooks({
   onRecordEvent(ev) {
     recordFixedDurationEvent(ev);
   },
-  onReleaseDegree(degreeIndex, when) {
-    trimAccompanimentEventsOnRelease(degreeIndex, when);
+  onReleaseDegree(degreeIndex, when, isProgression) {
+    trimAccompanimentEventsOnRelease(degreeIndex, when, isProgression);
   },
   onDebugCatchUp(deltaMs) {
     lastCatchUpDeltaMs = deltaMs;
@@ -704,7 +704,7 @@ export function recordNoteEnd(voiceKey) {
   });
 }
 
-export function recordFixedDurationEvent({ degreeIndex, notes, presetId, humanize, velocity = 0.9, when, duration }) {
+export function recordFixedDurationEvent({ degreeIndex, notes, presetId, humanize, velocity = 0.9, when, duration, isProgression = false }) {
   if (!isRecordingActiveOrSnappable()) return;
   const ctx = ensureAudioUnlocked();
   const evTime = when ?? ctx.currentTime;
@@ -714,6 +714,7 @@ export function recordFixedDurationEvent({ degreeIndex, notes, presetId, humaniz
   loopEvents.push({
     id: `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
     degreeIndex,
+    isProgression,
     offsetSec,
     durationSec: Math.max(0.06, duration || 0.25),
     notes: [...notes],
@@ -726,13 +727,13 @@ export function recordFixedDurationEvent({ degreeIndex, notes, presetId, humaniz
   });
 }
 
-function trimAccompanimentEventsOnRelease(degreeIndex, when = null) {
+function trimAccompanimentEventsOnRelease(degreeIndex, when = null, isProgression = false) {
   if (!isRecordingActiveOrSnappable()) return;
   const ctx = ensureAudioUnlocked();
   const now = when ?? ctx.currentTime;
   for (let i = loopEvents.length - 1; i >= 0; i--) {
     const ev = loopEvents[i];
-    if (ev.degreeIndex === degreeIndex && ev.recordedAtAudioTime > 0) {
+    if (ev.degreeIndex === degreeIndex && Boolean(ev.isProgression) === isProgression && ev.recordedAtAudioTime > 0) {
       const elapsedSinceEv = now - ev.recordedAtAudioTime;
       if (elapsedSinceEv >= 0 && elapsedSinceEv < ev.durationSec) {
         ev.durationSec = Math.max(0.065, elapsedSinceEv);
