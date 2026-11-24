@@ -1,0 +1,1100 @@
+/* Reset estricto y bloqueo a 100dvh (Cero scroll, cero recortes) */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+html, body {
+  width: 100%;
+  height: 100dvh;
+  max-height: 100dvh;
+  overflow: clip;
+  background-color: var(--bg-viewport);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  overscroll-behavior: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Chasis exterior hardware (#141518) */
+#orbita-chassis {
+  width: 100%;
+  height: 100dvh;
+  max-width: 1180px;
+  max-height: 100dvh;
+  background: var(--chassis-grad);
+  border: 1.5px solid var(--chassis-border);
+  border-radius: var(--radius-chassis);
+  box-shadow: var(--chassis-shadow);
+  display: flex;
+  flex-direction: column;
+  padding: 8px;
+  gap: 7px;
+  position: relative;
+  overflow: hidden;
+}
+
+/* En móvil a pantalla completa aprovechamos el 100% del viewport */
+@media (max-width: 900px) {
+  #orbita-chassis {
+    max-width: 100vw;
+    max-height: 100dvh;
+    border-radius: 0;
+    border: none;
+    padding: 6px;
+    gap: 6px;
+  }
+}
+
+/* =========================================================
+   BARRA SUPERIOR (HEADER)
+   ========================================================= */
+.hw-header {
+  flex: 0 0 auto;
+  height: 36px;
+  background: var(--recess-bg);
+  border: 1px solid var(--recess-border);
+  border-radius: 9px;
+  box-shadow: var(--recess-shadow);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 8px 0 10px;
+  gap: 6px;
+}
+
+.brand-group {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.power-led {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--led-emerald-bright);
+  box-shadow: var(--led-emerald-glow);
+}
+
+.brand-title {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 2px;
+  color: var(--text-primary);
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+@media (max-width: 420px) {
+  .hw-header { padding-inline: 8px; }
+  .brand-group { gap: 5px; }
+  .header-actions { gap: 4px; }
+  .header-actions .hdr-btn { min-width: 29px; padding-inline: 5px; gap: 4px; }
+}
+
+.hdr-btn {
+  height: 26px;
+  min-width: 30px;
+  padding: 0 7px;
+  background: var(--btn-bg);
+  border: 1px solid var(--btn-border);
+  border-radius: 6px;
+  box-shadow: var(--btn-shadow);
+  color: var(--text-secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  transition: transform var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.hdr-btn:active {
+  background: var(--btn-bg-active);
+  box-shadow: var(--btn-shadow-active);
+  transform: translateY(1px);
+}
+
+.hdr-btn svg {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.hdr-btn.is-on-amber {
+  color: var(--led-amber-bright);
+  border-color: rgba(245, 158, 11, 0.45);
+}
+
+.hdr-btn.is-on-cyan {
+  color: var(--led-cyan-bright);
+  border-color: rgba(6, 182, 212, 0.45);
+}
+
+.hdr-btn-rec {
+  padding: 0 6px;
+}
+
+.hdr-btn-rec.is-demo-rec {
+  color: var(--led-ruby-bright);
+  border-color: rgba(239, 68, 68, 0.78);
+  box-shadow: inset 0 0 12px rgba(239, 68, 68, 0.28), 0 0 10px rgba(239, 68, 68, 0.3);
+  animation: pulse-demo-rec 0.85s ease-in-out infinite alternate;
+}
+
+.demo-rec-timer {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 800;
+  color: var(--led-ruby-bright);
+  letter-spacing: 0.3px;
+}
+
+@keyframes pulse-demo-rec {
+  from { border-color: rgba(239, 68, 68, 0.45); }
+  to { border-color: rgba(248, 113, 113, 0.95); }
+}
+
+/* =========================================================
+   BARRA DE ESTADO OLED (Sonido · Acomp. · Batería · Progresión)
+   ========================================================= */
+.hw-status-strip {
+  flex: 0 0 auto;
+  height: 24px;
+  background: var(--screen-bg);
+  border: 1px solid var(--screen-border);
+  border-radius: 7px;
+  box-shadow: var(--screen-shadow);
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  align-items: center;
+  padding: 0 3px;
+  gap: 2px;
+  overflow: hidden;
+}
+
+.status-pill {
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  height: 20px;
+  padding: 0 4px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  transition: background 90ms ease;
+}
+
+.status-pill:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.status-pill + .status-pill {
+  border-left: 1px solid #1a1d24;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+.status-pill svg {
+  width: 11px;
+  height: 11px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2.1;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  flex-shrink: 0;
+}
+
+.status-pill-text {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.status-pill.is-sound {
+  color: var(--led-emerald-bright);
+}
+
+.status-pill.is-accomp {
+  color: var(--led-amber-bright);
+}
+
+.status-pill.is-accomp.is-off {
+  color: var(--text-secondary);
+}
+
+.status-pill.is-drum {
+  color: var(--led-violet-bright);
+}
+
+.status-pill.is-prog { color: var(--led-cyan-bright); }
+.status-pill.is-prog.is-off { color: var(--text-secondary); }
+.status-pill.is-prog.is-playing { color: var(--led-amber-bright); }
+
+/* =========================================================
+   CUERPO PRINCIPAL: PANEL DE CONTROL + TECLADO 7 TECLAS
+   ========================================================= */
+.hw-main {
+  --camera-pip-width: 116px;
+  --camera-pip-height: 156px;
+  --camera-pip-space: calc(var(--camera-pip-width) + 8px);
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  gap: 8px;
+  position: relative;
+}
+
+#camera-live-pip {
+  position: absolute;
+  inset: 0 0 auto auto;
+  z-index: 1;
+  width: var(--camera-pip-width);
+  height: var(--camera-pip-height);
+  border: 1px solid var(--screen-border);
+  border-radius: 9px;
+  background: #141518;
+  box-shadow: var(--recess-shadow);
+  overflow: hidden;
+  pointer-events: auto;
+}
+
+#camera-live-video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: scaleX(-1);
+}
+
+.camera-live-rec {
+  position: absolute;
+  top: 6px;
+  left: 5px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 4px;
+  border-radius: 4px;
+  background: #141518e6;
+  color: var(--text-primary);
+  font: 700 9px var(--font-mono);
+}
+
+#btn-minimize-camera {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 24px;
+  height: 24px;
+  font-size: 11px;
+  background: #141518e6;
+}
+
+@media (max-width: 900px) {
+  .hw-main { --camera-pip-width: 92px; --camera-pip-height: 124px; }
+}
+
+/* MODO HORIZONTAL / ESCRITORIO (como capturas/02_escritorio_ui_aprobada.jpg) */
+@media (orientation: landscape) {
+  .hw-main {
+    flex-direction: row;
+  }
+  .hw-main:has(> #camera-live-pip:not([hidden])) { padding-right: var(--camera-pip-space); }
+  .control-deck {
+    width: 325px;
+    flex: 0 0 325px;
+    height: 100%;
+  }
+  .keyboard-bay {
+    flex: 1 1 0;
+    min-width: 0;
+    height: 100%;
+  }
+}
+
+@media (orientation: landscape) and (max-width: 820px) {
+  .control-deck {
+    width: 275px;
+    flex: 0 0 275px;
+  }
+}
+
+/* MODO VERTICAL / MÓVIL PORTRAIT:
+   Panel arriba compacto sin recortar ni un solo control,
+   y 7 teclas abajo escalándose con flex: 1 1 0; min-height: 0 */
+@media (orientation: portrait) {
+  .hw-main {
+    flex-direction: column;
+    gap: 6px;
+  }
+  .control-deck {
+    width: 100%;
+    flex: 0 0 auto;
+  }
+  .hw-main:has(> #camera-live-pip:not([hidden])) .deck-grid-top {
+    padding-right: var(--camera-pip-space);
+    min-height: var(--camera-pip-height);
+  }
+  .keyboard-bay {
+    flex: 1 1 0;
+    min-height: 170px;
+    width: 100%;
+  }
+}
+
+/* =========================================================
+   PANEL DE CONTROL (CONTROL DECK)
+   ========================================================= */
+.control-deck {
+  background: var(--recess-bg);
+  border: 1px solid var(--recess-border);
+  border-radius: var(--radius-module);
+  box-shadow: var(--recess-shadow);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  justify-content: space-between;
+}
+
+/* En horizontal las 2 filas principales de módulos se estiran con gracia */
+.deck-grid-top,
+.deck-grid-mid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+@media (orientation: landscape) {
+  .deck-grid-top {
+    flex: 1.08 1 0;
+    min-height: 0;
+  }
+  .deck-grid-mid {
+    flex: 1.15 1 0;
+    min-height: 0;
+  }
+}
+
+/* Sub-módulos con bisel interno */
+.hw-module {
+  background: #101216;
+  border: 1px solid #1e2128;
+  border-radius: 8px;
+  padding: 5px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.7);
+}
+
+/* Botón hardware genérico */
+.hw-btn {
+  background: var(--btn-bg);
+  border: 1px solid var(--btn-border);
+  border-radius: var(--radius-btn);
+  box-shadow: var(--btn-shadow);
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  position: relative;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  transition: background var(--transition-fast), transform var(--transition-fast), border-color var(--transition-fast);
+}
+
+.hw-btn:hover {
+  background: var(--btn-bg-hover);
+}
+
+.hw-btn:active,
+.hw-btn.is-pressed {
+  background: var(--btn-bg-active);
+  box-shadow: var(--btn-shadow-active);
+  transform: translateY(1px);
+}
+
+.hw-btn svg {
+  width: 16px;
+  height: 16px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* LEDs puntuales */
+.led-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--led-off);
+  border: 1px solid var(--led-off-border);
+  transition: background 110ms ease, box-shadow 110ms ease;
+  flex-shrink: 0;
+}
+
+.led-dot.on-amber {
+  background: var(--led-amber-bright);
+  box-shadow: var(--led-amber-glow);
+  border-color: transparent;
+}
+
+.led-dot.on-emerald {
+  background: var(--led-emerald-bright);
+  box-shadow: var(--led-emerald-glow);
+  border-color: transparent;
+}
+
+.led-dot.on-cyan {
+  background: var(--led-cyan-bright);
+  box-shadow: var(--led-cyan-glow);
+  border-color: transparent;
+}
+
+.led-dot.on-violet {
+  background: var(--led-violet-bright);
+  box-shadow: var(--led-violet-glow);
+  border-color: transparent;
+}
+
+.led-dot.on-ruby {
+  background: var(--led-ruby-bright);
+  box-shadow: var(--led-ruby-glow);
+  border-color: transparent;
+}
+
+.led-strip-3 {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* =========================================================
+   1. BLOQUE IZQUIERDO (4 CONTROLES APILADOS)
+   ========================================================= */
+.module-left-stack {
+  display: grid;
+  grid-template-rows: repeat(4, 1fr);
+  gap: 4px;
+}
+
+.stack-btn {
+  width: 100%;
+  min-height: 29px;
+  height: 100%;
+  padding: 0 9px;
+  justify-content: space-between;
+}
+
+.stack-btn .icon-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Control 4 del stack: Acompañamiento Automático 0-9 con ◀ y ▶ */
+.accomp-row {
+  display: grid;
+  grid-template-columns: 30px 1fr 30px;
+  gap: 4px;
+  min-height: 29px;
+  height: 100%;
+}
+
+.accomp-screen {
+  background: var(--screen-bg);
+  border: 1px solid var(--screen-border);
+  border-radius: 6px;
+  box-shadow: var(--screen-shadow);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--text-secondary);
+}
+
+.accomp-screen.is-active {
+  color: var(--led-amber-bright);
+  text-shadow: 0 0 8px rgba(245, 158, 11, 0.55);
+}
+
+.accomp-screen svg {
+  width: 13px;
+  height: 13px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2;
+}
+
+/* =========================================================
+   2. BLOQUE DE TONALIDAD (CUADRÍCULA 2x2)
+   ========================================================= */
+.module-tonality {
+  display: grid;
+  grid-template-columns: 1.15fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  gap: 4px;
+}
+
+.tonic-display {
+  background: var(--screen-bg);
+  border: 1px solid var(--screen-border);
+  border-radius: var(--radius-btn);
+  box-shadow: var(--screen-shadow);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--led-amber-bright);
+  text-shadow: 0 0 10px rgba(245, 158, 11, 0.55);
+  letter-spacing: 0.5px;
+  min-height: 29px;
+}
+
+.mode-toggle-btn {
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 800;
+  min-height: 29px;
+}
+
+.mode-toggle-btn.is-major {
+  color: var(--led-emerald-bright);
+  text-shadow: 0 0 8px rgba(16, 185, 129, 0.55);
+}
+
+.mode-toggle-btn.is-minor {
+  color: var(--led-cyan-bright);
+  text-shadow: 0 0 8px rgba(6, 182, 212, 0.55);
+}
+
+.mode-toggle-btn.is-custom {
+  color: var(--led-amber-bright);
+  border-color: rgb(245 158 11 / 45%);
+}
+
+.hw-btn .wrench-mode-icon {
+  width: 19px;
+  height: 19px;
+  filter: drop-shadow(0 0 4px rgb(245 158 11 / 50%));
+}
+
+.arrow-btn {
+  font-size: 11px;
+  color: var(--text-primary);
+  min-height: 29px;
+}
+
+/* =========================================================
+   3. BLOQUES COMBINADOS (OCTAVA+SONIDO y TEMPO+BATERÍA)
+   ========================================================= */
+.module-dual-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px;
+}
+
+.dual-col {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.mini-screen {
+  height: 26px;
+  background: var(--screen-bg);
+  border: 1px solid var(--screen-border);
+  border-radius: 6px;
+  box-shadow: var(--screen-shadow);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 800;
+  padding: 0 4px;
+}
+
+.mini-screen svg {
+  width: 12px;
+  height: 12px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2;
+  flex-shrink: 0;
+}
+
+.mini-screen.screen-octave {
+  color: var(--text-primary);
+}
+
+.mini-screen.screen-sound {
+  color: var(--led-emerald-bright);
+  text-shadow: 0 0 8px rgba(16, 185, 129, 0.45);
+}
+
+.mini-screen.screen-tempo {
+  color: var(--led-cyan-bright);
+  text-shadow: 0 0 8px rgba(6, 182, 212, 0.45);
+  cursor: pointer;
+  justify-content: space-between;
+  padding: 0 6px;
+}
+
+.mini-screen.screen-drum {
+  color: var(--led-violet-bright);
+  text-shadow: 0 0 8px rgba(139, 92, 246, 0.45);
+}
+
+.col-arrows-2 {
+  flex: 1 1 0;
+  display: grid;
+  grid-template-rows: 1fr 1fr;
+  gap: 4px;
+}
+
+.col-arrows-3 {
+  flex: 1 1 0;
+  display: grid;
+  grid-template-rows: 24px 1fr 1fr;
+  gap: 4px;
+}
+
+@media (orientation: portrait) {
+  .col-arrows-2 .hw-btn {
+    min-height: 27px;
+  }
+  .col-arrows-3 {
+    grid-template-rows: 22px 24px 24px;
+  }
+  .col-arrows-3 .hw-btn {
+    min-height: 22px;
+  }
+}
+
+.drum-play-btn.is-playing {
+  color: var(--led-emerald-bright);
+  border-color: rgba(16, 185, 129, 0.5);
+  box-shadow: inset 0 0 10px rgba(16, 185, 129, 0.18);
+}
+
+.metro-tap-btn {
+  font-size: 10px;
+  color: var(--text-secondary);
+  gap: 4px;
+}
+
+.metro-tap-btn.metro-on {
+  color: var(--led-cyan-bright);
+  border-color: rgba(6, 182, 212, 0.45);
+}
+
+/* =========================================================
+   4. BARRA DE LOOPER (INFERIOR DEL PANEL)
+   ========================================================= */
+.module-looper {
+  background: #101216;
+  border: 1px solid #1e2128;
+  border-radius: 8px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.looper-status-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 16px;
+  padding: 0 2px;
+}
+
+.beat-leds {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.beat-leds .led-dot {
+  width: 7px;
+  height: 7px;
+}
+
+.loop-progress-track {
+  flex: 1 1 0;
+  height: 5px;
+  background: #07080a;
+  border: 1px solid #1c1f26;
+  border-radius: 999px;
+  overflow: hidden;
+  position: relative;
+}
+
+.loop-progress-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, var(--led-emerald) 0%, var(--led-cyan-bright) 100%);
+  border-radius: 999px;
+  transition: width 40ms linear;
+}
+
+.loop-progress-fill.is-recording {
+  background: linear-gradient(90deg, var(--led-ruby) 0%, var(--led-amber) 100%);
+}
+
+.loop-bars-badge {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 800;
+  color: var(--text-secondary);
+  background: var(--screen-bg);
+  border: 1px solid var(--screen-border);
+  border-radius: 4px;
+  padding: 1px 5px;
+  min-width: 28px;
+  text-align: center;
+}
+
+.looper-controls {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  height: 32px;
+}
+
+.looper-btn {
+  gap: 6px;
+}
+
+.looper-btn.is-rec-active {
+  border-color: rgba(239, 68, 68, 0.7);
+  box-shadow: inset 0 0 12px rgba(239, 68, 68, 0.25);
+}
+
+.looper-btn.is-countin {
+  border-color: rgba(245, 158, 11, 0.75);
+  animation: pulse-countin 0.35s infinite alternate;
+}
+
+.looper-btn.is-play-active {
+  border-color: rgba(16, 185, 129, 0.65);
+  box-shadow: inset 0 0 12px rgba(16, 185, 129, 0.2);
+}
+
+@media (orientation: landscape) and (max-height: 460px) {
+  .control-deck { gap: 4px; padding: 4px; }
+  .control-deck .hw-module { padding: 4px; }
+  .module-left-stack,
+  .col-arrows-2,
+  .col-arrows-3,
+  .dual-col { gap: 3px; }
+  .stack-btn,
+  .accomp-row,
+  .arrow-btn,
+  .tonic-display,
+  .mode-toggle-btn { min-height: 17px; }
+  .mini-screen { height: 20px; }
+  .col-arrows-3 { grid-template-rows: 17px 1fr 1fr; }
+  .module-looper { padding: 4px; gap: 4px; }
+  .looper-controls { height: 24px; }
+}
+
+@keyframes pulse-countin {
+  from { box-shadow: inset 0 0 4px rgba(245, 158, 11, 0.2); }
+  to { box-shadow: inset 0 0 14px rgba(239, 68, 68, 0.55); }
+}
+
+/* =========================================================
+   SUPERFICIE DE 7 TECLAS EN ZIG-ZAG (3 ARRIBA / 4 ABAJO)
+   ========================================================= */
+.keyboard-bay {
+  background: var(--recess-bg);
+  border: 1px solid var(--recess-border);
+  border-radius: var(--radius-module);
+  box-shadow: var(--recess-shadow);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: hidden;
+}
+
+@media (orientation: portrait) {
+  .keyboard-bay {
+    padding: 7px;
+    gap: 7px;
+  }
+}
+
+/* Ambas filas usan flex: 1 1 0; min-height: 0 para escalar sin recortes */
+.key-row {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+}
+
+.key-row-top { position: relative; }
+
+.progression-widget,
+.prog-info-badge {
+  position: absolute;
+  top: 0;
+  width: calc(12.5% - 4px);
+  min-width: 40px;
+  max-width: 68px;
+  height: 100%;
+  max-height: 132px;
+  border: 1px solid var(--screen-border);
+  border-radius: var(--radius-btn);
+  background: var(--screen-bg);
+  box-shadow: var(--screen-shadow);
+  font-family: var(--font-mono);
+}
+
+.progression-widget {
+  left: 0;
+  display: grid;
+  grid-template-rows: repeat(4, minmax(0, 1fr));
+  gap: 2px;
+  padding: 3px;
+}
+
+.progression-widget .hw-btn {
+  min-height: 0;
+  border-radius: 4px;
+  font-size: 10px;
+  gap: 4px;
+}
+
+.progression-widget .led-dot { width: 5px; height: 5px; }
+.progression-widget .hw-btn[aria-pressed="true"] { color: var(--led-amber-bright); }
+
+.prog-num {
+  display: grid;
+  place-items: center;
+  color: var(--led-amber-bright);
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.prog-num.is-off { color: var(--text-secondary); }
+.prog-info-badge[hidden] { display: none; }
+
+.prog-info-badge {
+  right: 0;
+  display: grid;
+  place-items: center;
+  writing-mode: vertical-rl;
+  white-space: nowrap;
+  color: #ba9b65;
+  font-size: 10px;
+  pointer-events: none;
+}
+
+/* En horizontal estrecho, el módulo debe seguir cabiendo junto a las teclas. */
+@media (orientation: landscape) and (max-width: 660px) {
+  .control-deck { width: 230px; flex-basis: 230px; }
+  .progression-widget,
+  .prog-info-badge { min-width: min(40px, calc(12.5% - 1px)); }
+}
+
+@media (orientation: portrait) {
+  .key-row {
+    gap: 7px;
+  }
+}
+
+/* Las 4 teclas inferiores ocupan 1/4 cada una; las 3 superiores tienen exactamente el mismo ancho y quedan centradas sobre los huecos intermedios */
+.key-row-bottom .key-pad {
+  flex: 0 0 calc((100% - 30px) / 4);
+  max-width: calc((100% - 30px) / 4);
+}
+
+.key-row-top .key-pad {
+  flex: 0 0 calc((100% - 30px) / 4);
+  max-width: calc((100% - 30px) / 4);
+}
+
+@media (orientation: portrait) {
+  .key-row-bottom .key-pad,
+  .key-row-top .key-pad {
+    flex: 0 0 calc((100% - 21px) / 4);
+    max-width: calc((100% - 21px) / 4);
+  }
+}
+
+.key-pad {
+  height: 100%;
+  background: var(--key-bg);
+  border: 1px solid var(--key-border);
+  border-bottom: 5px solid var(--key-lip);
+  border-radius: var(--radius-key);
+  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.55), inset 0 1px 0 #ffffff;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  overflow: hidden;
+  transition: transform 45ms ease, border-bottom-width 45ms ease, box-shadow 45ms ease;
+  touch-action: none;
+}
+
+.key-pad.is-active {
+  background: var(--key-bg-active);
+  border-bottom-width: 2px;
+  border-bottom-color: var(--key-lip-active);
+  transform: translateY(3px);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.65), inset 0 0 18px rgba(6, 182, 212, 0.18);
+}
+
+.key-pad.is-prog-active {
+  border-color: var(--led-amber-bright);
+  border-bottom-color: #ac7832;
+  box-shadow: 0 0 8px rgb(245 158 11 / 32%), inset 0 0 23px rgb(245 158 11 / 21%);
+}
+
+.key-pad.is-prog-active .key-roman { color: #82500a; }
+.key-pad.is-prog-active.is-active { border-bottom-color: var(--key-lip-active); }
+
+/* Grado romano (esquina superior izquierda) */
+.key-roman {
+  position: absolute;
+  top: 7px;
+  left: 9px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--key-text-meta);
+  pointer-events: none;
+}
+
+/* Atajo de teclado PC (esquina superior derecha / inferior derecha sutil) */
+.key-shortcut {
+  position: absolute;
+  top: 7px;
+  right: 9px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  color: #9aa5b5;
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+/* Nota principal en español (DO, RE, MI...) */
+.key-note {
+  font-family: var(--font-sans);
+  font-size: clamp(17px, 2.6vw, 24px);
+  font-weight: 900;
+  color: var(--key-text-main);
+  letter-spacing: 0.5px;
+  line-height: 1.1;
+  pointer-events: none;
+}
+
+/* Subtítulo de acorde/octava (Do, Rem, Mim, Fa, Sol, Lam, Si°) */
+.key-chord {
+  font-family: var(--font-mono);
+  font-size: clamp(10px, 1.4vw, 12px);
+  font-weight: 700;
+  color: var(--key-text-sub);
+  margin-top: 3px;
+  pointer-events: none;
+}
+
+/* Medidor de Expresión en Eje Y:
+   REGLA OBLIGATORIA: Invisible en reposo (opacity: 0), solo visible mientras la tecla está pulsada */
+.key-expr-track {
+  position: absolute;
+  left: 7px;
+  bottom: 10px;
+  top: 28px;
+  width: 5px;
+  background: rgba(15, 23, 42, 0.14);
+  border-radius: 999px;
+  overflow: hidden;
+  display: flex;
+  align-items: flex-end;
+  opacity: 0;
+  transition: opacity 90ms ease;
+  pointer-events: none;
+}
+
+.key-pad.is-active .key-expr-track {
+  opacity: 1;
+}
+
+.key-expr-fill {
+  width: 100%;
+  height: 50%;
+  background: linear-gradient(180deg, var(--led-cyan-bright) 0%, var(--led-blue) 100%);
+  box-shadow: var(--led-blue-glow);
+  border-radius: 999px;
+}
+
+/* =========================================================
+   HUD DE DIAGNÓSTICO (?debug=1)
+   ========================================================= */
+.debug-hud {
+  position: fixed;
+  bottom: 6px;
+  right: 6px;
+  background: rgba(7, 8, 10, 0.92);
+  border: 1px solid var(--led-cyan);
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--led-cyan-bright);
+  z-index: 9999;
+  pointer-events: none;
+  line-height: 1.35;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.75);
+}
+
+.debug-hud[hidden] {
+  display: none !important;
+}

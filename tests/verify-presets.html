@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <title>ÓRBITA — Verificación Automática de 50 Sonidos y 50 Baterías</title>
+  <style>
+    body {
+      background: #0d0f13;
+      color: #eef2f6;
+      font-family: 'Consolas', monospace;
+      padding: 20px;
+      line-height: 1.45;
+    }
+    h1 { font-size: 18px; color: #34d399; margin-bottom: 12px; }
+    button {
+      background: #10b981;
+      color: #06110d;
+      border: none;
+      padding: 10px 18px;
+      border-radius: 6px;
+      font-weight: 800;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    #summary { margin: 14px 0; font-size: 15px; font-weight: bold; }
+    .pass { color: #34d399; }
+    .fail { color: #f87171; }
+    #log {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 6px;
+      font-size: 12px;
+    }
+    .item {
+      background: #151820;
+      border: 1px solid #232834;
+      padding: 6px 10px;
+      border-radius: 5px;
+    }
+  </style>
+</head>
+<body>
+  <h1>ÓRBITA — Test Automático de Audio (50 Sonidos + 50 Baterías)</h1>
+  <button id="btn-run">Ejecutar Auditoría Completa</button>
+  <div id="summary">Pendiente de ejecución...</div>
+  <div id="log"></div>
+
+  <script type="module">
+    import { SYNTH_PRESETS, spawnSingleNoteVoice } from '../js/synth-presets.js';
+    import { DRUM_PATTERNS, triggerDrumPatternStep } from '../js/drum-engine.js';
+    import { ensureAudioUnlocked } from '../js/audio-core.js';
+
+    async function runFullAudit() {
+      const summaryEl = document.getElementById('summary');
+      const logEl = document.getElementById('log');
+      logEl.innerHTML = '';
+      summaryEl.textContent = 'Verificando 50 sonidos y 50 patrones de batería...';
+
+      const ctx = ensureAudioUnlocked();
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 512;
+      const probeGain = ctx.createGain();
+      probeGain.gain.value = 0.05; // Volumen bajo durante el test rápido
+      probeGain.connect(analyser);
+      analyser.connect(ctx.destination);
+
+      const buf = new Float32Array(analyser.fftSize);
+      let passedSounds = 0;
+      let passedDrums = 0;
+      let failures = [];
+
+      // 1. Verificar los 50 presets de sintetizador
+      for (const preset of SYNTH_PRESETS) {
+        let ok = false;
+        let peakRms = 0;
+        let hasNaN = false;
+        try {
+          const voice = spawnSingleNoteVoice(60, preset, ctx.currentTime, 0.9, probeGain);
+          await new Promise(r => setTimeout(r, 25));
+          analyser.getFloatTimeDomainData(buf);
+          let sum = 0;
+          for (let i = 0; i < buf.length; i++) {
+            if (Number.isNaN(buf[i])) hasNaN = true;
+            sum += buf[i] * buf[i];
+          }
+          peakRms = Math.sqrt(sum / buf.length);
+          voice.stop();
+          ok = !hasNaN && peakRms > 0.0001;
+        } catch (err) {
+          ok = false;
+        }
+
+        if (ok) passedSounds++;
+        else failures.push(`Sonido #${preset.id + 1} (${preset.name})`);
+
+        const div = document.createElement('div');
+        div.className = `item ${ok ? 'pass' : 'fail'}`;
+        div.textContent = `[SYNTH ${String(preset.id + 1).padStart(2, '0')}] ${preset.name}: ${ok ? 'OK' : 'FALLO'} (RMS=${peakRms.toFixed(4)})`;
+        logEl.appendChild(div);
+      }
+
+      // 2. Verificar los 50 patrones de batería
+      for (const pat of DRUM_PATTERNS) {
+        let ok = false;
+        let peakRms = 0;
+        let hasNaN = false;
+        try {
+          // Disparar los pasos activos del patrón en el bus de prueba
+          for (let s = 0; s < 16; s++) {
+            triggerDrumPatternStep(pat, s, ctx.currentTime, probeGain);
+          }
+          await new Promise(r => setTimeout(r, 20));
+          analyser.getFloatTimeDomainData(buf);
+          let sum = 0;
+          for (let i = 0; i < buf.length; i++) {
+            if (Number.isNaN(buf[i])) hasNaN = true;
+            sum += buf[i] * buf[i];
+          }
+          peakRms = Math.sqrt(sum / buf.length);
+          ok = !hasNaN && peakRms > 0.0001;
+        } catch (err) {
+          ok = false;
+        }
+
+        if (ok) passedDrums++;
+        else failures.push(`Batería #${pat.id + 1} (${pat.name})`);
+
+        const div = document.createElement('div');
+        div.className = `item ${ok ? 'pass' : 'fail'}`;
+        div.textContent = `[DRUM ${String(pat.id + 1).padStart(2, '0')}] ${pat.name}: ${ok ? 'OK' : 'FALLO'} (RMS=${peakRms.toFixed(4)})`;
+        logEl.appendChild(div);
+      }
+
+      const allPassed = passedSounds === 50 && passedDrums === 50;
+      summaryEl.className = allPassed ? 'pass' : 'fail';
+      summaryEl.textContent = `RESULTADO: Sonidos ${passedSounds}/50 OK | Baterías ${passedDrums}/50 OK ${allPassed ? '— 100% VALIDADO SIN ERRORES' : '— Fallos: ' + failures.join(', ')}`;
+      window.__AUDIT_RESULT__ = { passedSounds, passedDrums, allPassed, failures };
+    }
+
+    document.getElementById('btn-run').addEventListener('click', runFullAudit);
+    // Si se abre con ?autorun=1, ejecutar al primer click o automáticamente
+    if (new URLSearchParams(location.search).get('autorun') === '1') {
+      window.addEventListener('pointerdown', () => {
+        if (!window.__AUDIT_STARTED__) {
+          window.__AUDIT_STARTED__ = true;
+          runFullAudit();
+        }
+      }, { once: true });
+    }
+  </script>
+</body>
+</html>

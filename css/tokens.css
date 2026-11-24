@@ -1,0 +1,94 @@
+:root {
+  /* Chasis y superficies de aluminio anodizado oscuro */
+  --bg-viewport: #08090b;
+  --chassis-bg: #141518;
+  --chassis-grad: linear-gradient(165deg, #1a1c21 0%, #121317 55%, #0e0f12 100%);
+  --chassis-border: #282b33;
+  --chassis-shadow: 0 22px 55px rgba(0, 0, 0, 0.85), inset 0 1px 0 rgba(255, 255, 255, 0.07);
+
+  /* Cavidades y módulos internos */
+  --recess-bg: #0c0d10;
+  --recess-border: #1e2026;
+  --recess-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.85), 0 1px 0 rgba(255, 255, 255, 0.03);
+
+  /* Pantallas OLED / LCD oscuras */
+  --screen-bg: #07080a;
+  --screen-border: #1b1e24;
+  --screen-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.95);
+
+  /* Botones táctiles hardware oscuros */
+  --btn-bg: linear-gradient(180deg, #1d2026 0%, #14161b 100%);
+  --btn-bg-hover: linear-gradient(180deg, #23272f 0%, #181b21 100%);
+  --btn-bg-active: linear-gradient(180deg, #101216 0%, #16181d 100%);
+  --btn-border: #282c35;
+  --btn-border-active: #3a404d;
+  --btn-shadow: 0 2px 4px rgba(0, 0, 0, 0.65), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  --btn-shadow-active: inset 0 2px 4px rgba(0, 0, 0, 0.85);
+
+  /* Teclas físicas marfil / titanio claro (7 teclas en zig-zag) */
+  --key-bg: linear-gradient(180deg, #f8fafb 0%, #eaEEF2 78%, #d5dce3 100%);
+  --key-bg-active: linear-gradient(180deg, #e2e8f0 0%, #cbd5e1 100%);
+  --key-border: #ffffff;
+  --key-lip: #9aa5b4;
+  --key-lip-active: #64748b;
+  --key-text-main: #12151a;
+  --key-text-sub: #525d6d;
+  --key-text-meta: #7c8899;
+
+  /* Textos e iconos */
+  --text-primary: #eef2f6;
+  --text-secondary: #949eae;
+  --text-muted: #565e6d;
+
+  /* LEDs de alto contraste */
+  --led-off: #23262e;
+  --led-off-border: #16181d;
+
+  /* Ámbar: Acordes, Tónica, Key-Strike, Pulso 1 */
+  --led-amber: #f59e0b;
+  --led-amber-bright: #fbbf24;
+  --led-amber-glow: 0 0 10px rgba(245, 158, 11, 0.85), 0 0 3px rgba(251, 191, 36, 0.9);
+
+  /* Esmeralda: Melodía, Modo M/m, Sonido, Play */
+  --led-emerald: #10b981;
+  --led-emerald-bright: #34d399;
+  --led-emerald-glow: 0 0 10px rgba(16, 185, 129, 0.85), 0 0 3px rgba(52, 211, 153, 0.9);
+
+  /* Cian: Humanizador, Tempo/BPM, Expresión */
+  --led-cyan: #06b6d4;
+  --led-cyan-bright: #22d3ee;
+  --led-cyan-glow: 0 0 10px rgba(6, 182, 212, 0.85), 0 0 3px rgba(34, 211, 238, 0.9);
+
+  /* Violeta: Reverb, Batería */
+  --led-violet: #8b5cf6;
+  --led-violet-bright: #a78bfa;
+  --led-violet-glow: 0 0 10px rgba(139, 92, 246, 0.85), 0 0 3px rgba(167, 139, 250, 0.9);
+
+  /* Rubí: REC, Precuenta, Alerta */
+  --led-ruby: #ef4444;
+  --led-ruby-bright: #f87171;
+  --led-ruby-glow: 0 0 12px rgba(239, 68, 68, 0.9), 0 0 4px rgba(248, 113, 113, 0.95);
+
+  /* Azul: Modulación Eje Y (solo durante toque activo) */
+  --led-blue: #3b82f6;
+  --led-blue-bright: #60a5fa;
+  --led-blue-glow: 0 0 12px rgba(59, 130, 246, 0.85);
+
+  /* Baremo Detector de Tonalidad (4 niveles) */
+  --heat-red: #ef4444;
+  --heat-orange: #f97316;
+  --heat-yellow: #eab308;
+  --heat-green: #22c55e;
+
+  /* Tipografía y radios */
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Consolas', monospace;
+
+  --radius-chassis: 18px;
+  --radius-module: 10px;
+  --radius-btn: 7px;
+  --radius-key: 11px;
+
+  /* Transiciones rápidas de respuesta táctil */
+  --transition-fast: 70ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
