@@ -85,7 +85,7 @@ test('el teclado Custom reproduce el zigzag del chasis y la PWA usa la caché ac
     .map(file => readFile(new URL(file, root), 'utf8')));
   assert.match(css, /html, body\s*\{[^}]*height:\s*100dvh;[^}]*overflow:\s*clip/);
   assert.match(tokens, /--chassis-bg:\s*#141518;/);
-  assert.match(serviceWorker, /const CACHE_NAME = 'orbita-v2-hw-v4';/);
+  assert.match(serviceWorker, /const CACHE_NAME = 'orbita-v2-hw-v5';/);
 });
 
 test('el looper tiene cuatro botones de 32 px y un selector de audio oculto', async () => {
@@ -125,6 +125,23 @@ test('la pista cargada tiene faders de 0 a 150% en CONFIG y en el mezclador de m
     .map(file => readFile(new URL(file, root), 'utf8')));
   assert.match(css, /\.mixer-row\[hidden\]\s*\{\s*display:\s*none/);
   assert.match(ui, /getElementById\('mix-backing-row'\)\.hidden\s*=\s*!session\.hasBackingTrack/);
+});
+
+test('el mezclador de maqueta muestra el fader, las tres etapas y el medidor Master', () => {
+  const studio = html.slice(html.indexOf('id="modal-demo-result"'));
+  const mixer = studio.slice(studio.indexOf('class="studio-mixer-box"'), studio.indexOf('class="studio-fx-grid"'));
+  assert.match(mixer, /id="mix-master-row"[\s\S]*?id="mix-master-vol" min="0" max="200" value="100"[^>]*>\s*<span id="mix-master-val"[^>]*>100%/);
+  assert.match(mixer, /<canvas id="studio-vu-canvas" width="520" height="34"/);
+  assert.match(mixer, /id="studio-vu-db">-∞ dB/);
+  assert.match(mixer, /<button[^>]+id="studio-vu-clip"[^>]*>CLIP/);
+  assert.match(mixer, /<strong>0 dB<\/strong>/);
+  const modes = mixer.match(/id="studio-master-mode-row"[^>]*>([\s\S]*?)<\/div>/)[1];
+  assert.deepEqual([...modes.matchAll(/id="btn-master-(\w+)"[^>]+data-master-mode="\1" aria-pressed="(\w+)"/g)]
+    .map(([, mode, pressed]) => [mode, pressed]), [['clean', 'false'], ['comp', 'true'], ['clip', 'false']]);
+  assert.equal(t('studio.masterClean', 'es'), 'LIMPIO');
+  assert.equal(t('studio.masterClean', 'en'), 'CLEAN');
+  assert.equal(t('studio.masterOutput', 'es'), 'SALIDA');
+  assert.equal(t('studio.masterOutput', 'en'), 'OUTPUT');
 });
 
 test('la captura de maqueta abre el micro crudo y aplica un pasaaltos fijo de 40 Hz', async () => {

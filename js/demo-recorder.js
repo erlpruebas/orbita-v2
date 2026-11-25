@@ -17,6 +17,29 @@ import { prepareFrontCamera } from './short-video.js';
 import { getActivePreset, setNoteEventObserver } from './synth-presets.js';
 import { formatChordLabel, getDiatonicDegrees, getNoteNameTitle, getNoteNameUpper } from './theory.js';
 
+export const MASTER_MODES = Object.freeze(['clean', 'comp', 'clip']);
+
+export function linearPeakToDb(peak) {
+  return peak <= 0 ? -Infinity : 20 * Math.log10(peak);
+}
+
+export function dbToMeterRatio(db) {
+  return Math.max(0, Math.min(1, (db + 36) / 42));
+}
+
+const SOFT_CLIP_HEADROOM = 8;
+const softClipCurve = (() => {
+  const knee = 10 ** (-3 / 20);
+  const room = 1 - knee;
+  const curve = new Float32Array(4097);
+  for (let i = 0; i < curve.length; i++) {
+    const sample = (2 * i / (curve.length - 1) - 1) * SOFT_CLIP_HEADROOM;
+    const level = Math.abs(sample);
+    curve[i] = level <= knee ? sample : Math.sign(sample) * (knee + room * Math.tanh((level - knee) / room));
+  }
+  return curve;
+})();
+
 const VOICE_FILTER_PRESETS = [
   { bleedCancel: 0, gateStrength: 0, gateFloor: 1.0, highpassHz: 40, deMudDb: 0, presenceDb: 0, lowpassHz: 20000 },
   { bleedCancel: 0.40, gateStrength: 0.35, gateFloor: 0.32, highpassHz: 105, deMudDb: -3.0, presenceDb: 2.0, lowpassHz: 14000 },
@@ -598,24 +621,62 @@ function encodeAudioBufferToMp3Blob(audioBuffer, kbps = 192) {
  */
 function buildTwoTrackMixGraph(ctx, destNode, settings, hasBackingTrack = false) {
   const now = ctx.currentTime;
+  const masterBusGain = ctx.createGain();
+  masterBusGain.gain.setValueAtTime(safeParam(settings.masterVol ?? 1.0, 0, 2.0), now);
 
-  const masterLimiter = ctx.createDynamicsCompressor();
-  masterLimiter.threshold.setValueAtTime(-4, now);
-  masterLimiter.knee.setValueAtTime(10, now);
-  masterLimiter.ratio.setValueAtTime(5, now);
-  masterLimiter.attack.setValueAtTime(0.004, now);
-  masterLimiter.release.setValueAtTime(0.16, now);
-  masterLimiter.connect(destNode);
+  let meterAnalyser = null;
+  let rightAnalyser = null;
+  let meterSplitter = null;
+  if (typeof ctx.createAnalyser === 'function' && typeof ctx.startRendering !== 'function') {
+    meterAnalyser = ctx.createAnalyser();
+    meterAnalyser.fftSize = 1024;
+    // Leer L y R por separado evita que la mezcla a mono oculte picos por contrafase.
+    meterAnalyser.channelCount = 1;
+    meterAnalyser.channelCountMode = 'explicit';
+    meterAnalyser.channelInterpretation = 'discrete';
+    masterBusGain.connect(meterAnalyser);
+    meterSplitter = ctx.createChannelSplitter(2);
+    rightAnalyser = ctx.createAnalyser();
+    rightAnalyser.fftSize = meterAnalyser.fftSize;
+    masterBusGain.connect(meterSplitter).connect(rightAnalyser, 1);
+  }
+
+  const cleanGain = ctx.createGain();
+  const compGain = ctx.createGain();
+  const clipGain = ctx.createGain();
+  const modeGains = { clean: cleanGain, comp: compGain, clip: clipGain };
+  const initialMode = MASTER_MODES.includes(settings.masterMode) ? settings.masterMode : 'comp';
+  for (const mode of MASTER_MODES) {
+    modeGains[mode].gain.setValueAtTime(Number(mode === initialMode), now);
+    modeGains[mode].connect(destNode);
+  }
+  masterBusGain.connect(cleanGain);
+
+  const compressor = ctx.createDynamicsCompressor();
+  compressor.threshold.setValueAtTime(-3, now);
+  compressor.knee.setValueAtTime(12, now);
+  compressor.ratio.setValueAtTime(6, now);
+  compressor.attack.setValueAtTime(0.004, now);
+  compressor.release.setValueAtTime(0.14, now);
+  masterBusGain.connect(compressor).connect(compGain);
+
+  const clipInput = ctx.createGain();
+  const softClip = ctx.createWaveShaper();
+  // El WaveShaper limita la entrada de la tabla a ±1. Reservar margen conserva la saturación por encima de 0 dB.
+  clipInput.gain.setValueAtTime(1 / SOFT_CLIP_HEADROOM, now);
+  softClip.curve = softClipCurve;
+  softClip.oversample = '2x';
+  masterBusGain.connect(clipInput).connect(softClip).connect(clipGain);
 
   // PISTA 1: Música
   const musicGain = ctx.createGain();
   musicGain.gain.setValueAtTime(safeParam(settings.musicVol ?? 0.90, 0, 2.0), now);
-  musicGain.connect(masterLimiter);
+  musicGain.connect(masterBusGain);
 
   const backingGain = hasBackingTrack ? ctx.createGain() : null;
   if (backingGain) {
     backingGain.gain.setValueAtTime(safeParam(settings.backingVol ?? 0.90, 0, 1.5), now);
-    backingGain.connect(masterLimiter);
+    backingGain.connect(masterBusGain);
   }
 
   // PISTA 2: EQ, chorus estéreo y eco. El nivel 0 deja pasar la captura sin otra EQ.
@@ -706,13 +767,13 @@ function buildTwoTrackMixGraph(ctx, destNode, settings, hasBackingTrack = false)
   const echoWet = ctx.createGain();
   echoWet.gain.setValueAtTime(ecCfg.wet, now);
 
-  postChorusSum.connect(masterLimiter); // Ruta directa (seca + chorus)
+  postChorusSum.connect(masterBusGain); // Ruta directa (seca + chorus)
   postChorusSum.connect(echoDelay);
   echoDelay.connect(echoFilter);
   echoFilter.connect(echoFeedback);
   echoFeedback.connect(echoDelay);
   echoFilter.connect(echoWet);
-  echoWet.connect(masterLimiter);
+  echoWet.connect(masterBusGain);
 
   lfoL.start(now);
   lfoR.start(now);
@@ -721,8 +782,15 @@ function buildTwoTrackMixGraph(ctx, destNode, settings, hasBackingTrack = false)
     musicGain,
     backingGain,
     voiceInputGain,
+    meterAnalyser,
+    rightAnalyser,
     updateParams(newSettings) {
       const t = ctx.currentTime;
+      masterBusGain.gain.setTargetAtTime(safeParam(newSettings.masterVol ?? 1.0, 0, 2.0), t, 0.015);
+      const masterMode = MASTER_MODES.includes(newSettings.masterMode) ? newSettings.masterMode : 'comp';
+      for (const mode of MASTER_MODES) {
+        modeGains[mode].gain.setTargetAtTime(Number(mode === masterMode), t, 0.015);
+      }
       musicGain.gain.setTargetAtTime(safeParam(newSettings.musicVol ?? 0.90, 0, 2.0), t, 0.02);
       backingGain?.gain.setTargetAtTime(safeParam(newSettings.backingVol ?? 0.90, 0, 1.5), t, 0.02);
       voiceInputGain.gain.setTargetAtTime(safeParam(newSettings.voiceVol ?? 1.15, 0, 2.5), t, 0.02);
@@ -758,7 +826,9 @@ function buildTwoTrackMixGraph(ctx, destNode, settings, hasBackingTrack = false)
     disconnect() {
       // Romper también el ciclo de feedback al reemplazar una preescucha.
       echoFeedback.disconnect();
-      masterLimiter.disconnect();
+      masterBusGain.disconnect();
+      meterSplitter?.disconnect();
+      for (const mode of MASTER_MODES) modeGains[mode].disconnect();
     }
   };
 }
@@ -1372,6 +1442,25 @@ export function updateLivePreviewMix(settings) {
   previewState?.graph.updateParams(settings);
 }
 
+export function readLiveMasterMeter() {
+  const meter = previewState?.meter;
+  if (!meter) return { peakDb: -Infinity, rmsDb: -Infinity, clipped: false };
+
+  const { analysers, samples } = meter;
+  let maxAbs = 0;
+  let sumSquares = 0;
+  for (const analyser of analysers) {
+    analyser.getFloatTimeDomainData(samples);
+    for (const sample of samples) {
+      maxAbs = Math.max(maxAbs, Math.abs(sample));
+      sumSquares += sample * sample;
+    }
+  }
+  const peakDb = linearPeakToDb(maxAbs);
+  const rmsDb = linearPeakToDb(Math.sqrt(sumSquares / (samples.length * analysers.length)));
+  return { peakDb, rmsDb, clipped: peakDb > 0 };
+}
+
 export function startDemoPreviewPlayback(settings, onProgress, onEnded, seekStartSec = null) {
   if (!currentSession || !currentSession.musicBuffer) return false;
 
@@ -1415,7 +1504,11 @@ export function startDemoPreviewPlayback(settings, onProgress, onEnded, seekStar
   const stopAt = startAt + playDur + tailSec;
 
   const localState = {
-    ctx, graph, output, musicSrc, voiceSrc, backingSrc, startAt, startSec, playDur, tailSec, rafId: null, onEnded
+    ctx, graph, output, musicSrc, voiceSrc, backingSrc, startAt, startSec, playDur, tailSec, rafId: null, onEnded,
+    meter: graph.meterAnalyser ? {
+      analysers: [graph.meterAnalyser, graph.rightAnalyser],
+      samples: new Float32Array(graph.meterAnalyser.fftSize)
+    } : null
   };
   previewState = localState;
 
@@ -1426,8 +1519,8 @@ export function startDemoPreviewPlayback(settings, onProgress, onEnded, seekStar
       stopDemoPreviewPlayback();
       return;
     }
-    onProgress?.(position);
-    localState.rafId = requestAnimationFrame(tick);
+    onProgress?.(position, readLiveMasterMeter());
+    if (previewState === localState) localState.rafId = requestAnimationFrame(tick);
   };
   localState.rafId = requestAnimationFrame(tick);
 

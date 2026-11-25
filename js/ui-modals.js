@@ -40,6 +40,9 @@ import {
   computeTonalityAnalysis
 } from './tonality-mic.js';
 import {
+  MASTER_MODES,
+  dbToMeterRatio,
+  readLiveMasterMeter,
   cancelDemoCountIn,
   isDemoCountIn,
   isDemoRecording,
@@ -84,6 +87,8 @@ const studioMix = {
   musicVol: 0.90,
   voiceVol: 1.15,
   backingVol: 0.90,
+  masterVol: 1.0,
+  masterMode: 'comp',
   voiceEcho: 0,      // 0..3 LEDs cian
   voiceChorus: 0,    // 0..3 LEDs violeta
   voiceFilter: 0,
@@ -93,6 +98,11 @@ const studioMix = {
   playheadSec: null
 };
 let appliedVoiceOffsetMs = studioMix.voiceOffsetMs;
+let studioVuHoldDb = -Infinity;
+let studioVuHoldUntil = 0;
+let studioVuLastFrame = 0;
+let studioVuClipped = false;
+let studioVuIdleFrame = null;
 
 function stopAllPreviews() {
   customPreview?.stop(null, true);
@@ -815,21 +825,105 @@ function updateVoiceFilterLabel() {
     translate('studio.filterLevel', { level: studioMix.voiceFilter }));
 }
 
+function updateStudioMasterControls() {
+  const percent = Math.round(studioMix.masterVol * 100);
+  document.getElementById('mix-master-vol').value = String(percent);
+  document.getElementById('mix-master-val').textContent = `${percent}%`;
+  for (const button of document.querySelectorAll('#studio-master-mode-row [data-master-mode]')) {
+    button.setAttribute('aria-pressed', String(button.dataset.masterMode === studioMix.masterMode));
+  }
+}
+
+function drawStudioMasterMeter(peakDb = -Infinity) {
+  const readout = document.getElementById('studio-vu-db');
+  const dbText = Number.isFinite(peakDb) ? `${peakDb > 0 ? '+' : ''}${peakDb.toFixed(1)} dB` : '-∞ dB';
+  if (readout.textContent !== dbText) readout.textContent = dbText;
+  readout.classList.toggle('is-clipped', peakDb > 0);
+  document.getElementById('studio-vu-clip').classList.toggle('is-clipped', studioVuClipped);
+
+  const canvas = document.getElementById('studio-vu-canvas');
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  const { width, height } = canvas;
+  const segmentCount = 42;
+  const step = width / segmentCount;
+  const liveWidth = dbToMeterRatio(peakDb) * width;
+  const zeroX = dbToMeterRatio(0) * width;
+  ctx.clearRect(0, 0, width, height);
+  for (let i = 0; i < segmentCount; i++) {
+    const x = i * step;
+    const db = i + 1 - 36;
+    const litWidth = Math.min(step - 2, liveWidth - x);
+    ctx.fillStyle = db > 0 ? '#35171c' : db >= -6 ? '#302616' : '#102820';
+    ctx.fillRect(x, 9, step - 2, 16);
+    if (litWidth > 0) {
+      ctx.fillStyle = db > 0 ? '#ef4444' : db >= -6 ? '#f59e0b' : '#10b981';
+      ctx.fillRect(x, 9, litWidth, 16);
+      ctx.fillStyle = db > 0 ? '#f87171' : db >= -6 ? '#fbbf24' : '#34d399';
+      ctx.fillRect(x, 9, litWidth, 2);
+    }
+  }
+
+  ctx.fillStyle = '#b6f1ff';
+  ctx.fillRect(zeroX - 2, 3, 2, 28);
+  if (studioVuHoldDb > -36) {
+    const holdX = Math.min(width - 2, dbToMeterRatio(studioVuHoldDb) * width);
+    ctx.fillStyle = studioVuHoldDb > 0 ? '#fda4af' : studioVuHoldDb > -6 ? '#fde68a' : '#a7f3d0';
+    ctx.fillRect(holdX, 6, 2, 22);
+  }
+}
+
+function updateStudioMasterMeter({ peakDb, clipped }, now = performance.now()) {
+  const displayPeak = Math.min(6, peakDb);
+  if (displayPeak > -36 && displayPeak >= studioVuHoldDb) {
+    studioVuHoldDb = displayPeak;
+    studioVuHoldUntil = now + 900;
+  } else if (now > studioVuHoldUntil) {
+    const elapsed = Math.max(0, now - Math.max(studioVuLastFrame, studioVuHoldUntil));
+    studioVuHoldDb = Math.max(displayPeak, studioVuHoldDb - elapsed * 0.028);
+  }
+  studioVuLastFrame = now;
+  studioVuClipped ||= clipped;
+  drawStudioMasterMeter(peakDb);
+}
+
+function animateStudioMeterToRest(now) {
+  updateStudioMasterMeter({ peakDb: -Infinity, clipped: false }, now);
+  studioVuIdleFrame = studioVuHoldDb > -36 ? requestAnimationFrame(animateStudioMeterToRest) : null;
+}
+
+function cancelStudioMeterIdleAnimation() {
+  if (studioVuIdleFrame !== null) cancelAnimationFrame(studioVuIdleFrame);
+  studioVuIdleFrame = null;
+}
+
+function resetStudioMasterMeter(peakDb = -Infinity) {
+  cancelStudioMeterIdleAnimation();
+  studioVuHoldDb = -Infinity;
+  studioVuHoldUntil = 0;
+  studioVuLastFrame = 0;
+  studioVuClipped = false;
+  drawStudioMasterMeter(peakDb);
+}
+
 function clampStudioSeek(sec) {
   const { trimStartSec: start, trimEndSec: end } = studioMix;
   return Math.max(start, Math.min(Math.max(start, end - 0.05), sec));
 }
 
 function playStudioMix(seekStartSec = null) {
-  const ok = startDemoPreviewPlayback(studioMix, posSec => {
+  const ok = startDemoPreviewPlayback(studioMix, (posSec, meterData) => {
+    updateStudioMasterMeter(meterData);
     if (waveformPointerId !== null) return;
     studioMix.playheadSec = posSec;
     drawTwoTrackWaveform();
   }, () => {
     setPreviewPlayBtnState(false);
     drawTwoTrackWaveform();
+    animateStudioMeterToRest(performance.now());
   }, seekStartSec);
   if (ok) {
+    cancelStudioMeterIdleAnimation();
     studioMix.playheadSec = clampStudioSeek(seekStartSec ?? studioMix.trimStartSec);
     drawTwoTrackWaveform();
     setPreviewPlayBtnState(true);
@@ -1023,6 +1117,8 @@ function openDemoStudioModal(session) {
   studioMix.musicVol = 0.90;
   studioMix.voiceVol = 1.15;
   studioMix.backingVol = 0.90;
+  studioMix.masterVol = 1.0;
+  studioMix.masterMode = 'comp';
   studioMix.voiceEcho = 0;
   studioMix.voiceChorus = 0;
   studioMix.voiceFilter = 0;
@@ -1055,6 +1151,8 @@ function openDemoStudioModal(session) {
 
   setPreviewPlayBtnState(false);
   updateStudioControlsDOM();
+  updateStudioMasterControls();
+  resetStudioMasterMeter();
   modal.hidden = false;
 }
 
@@ -1262,6 +1360,21 @@ export function initModalsUI() {
     updateStudioControlsDOM();
     updateLivePreviewMix(studioMix);
   });
+  document.getElementById('mix-master-vol').addEventListener('input', ({ target }) => {
+    studioMix.masterVol = Number(target.value) / 100;
+    updateStudioMasterControls();
+    updateLivePreviewMix(studioMix);
+  });
+  document.getElementById('studio-master-mode-row').addEventListener('click', event => {
+    const mode = event.target.closest('[data-master-mode]')?.dataset.masterMode;
+    if (!MASTER_MODES.includes(mode)) return;
+    studioMix.masterMode = mode;
+    updateStudioMasterControls();
+    updateLivePreviewMix(studioMix);
+  });
+  document.getElementById('studio-vu-clip').addEventListener('click', () => {
+    resetStudioMasterMeter(readLiveMasterMeter().peakDb);
+  });
 
   // Controles de Sincronización Voz vs Música (Compensación de latencia hardware en ms)
   const applyVoiceSyncOffset = (newMs, commit = true) => {
@@ -1411,6 +1524,7 @@ export function initModalsUI() {
   document.getElementById('btn-close-demo-result')?.addEventListener('click', () => {
     stopDemoPreviewPlayback();
     setPreviewPlayBtnState(false);
+    resetStudioMasterMeter();
     resetDemoVideo();
     if (modalDemo) modalDemo.hidden = true;
   });
@@ -1429,7 +1543,10 @@ export function initModalsUI() {
         stopChromaticReferenceNote();
         stopDemoPreviewPlayback();
         setPreviewPlayBtnState(false);
-        if (backdrop === modalDemo) resetDemoVideo();
+        if (backdrop === modalDemo) {
+          resetStudioMasterMeter();
+          resetDemoVideo();
+        }
         backdrop.hidden = true;
       }
     });

@@ -47,8 +47,10 @@ export const HELP_CONTENT = {
         ['Grabar y mezclar', 'Pulsa el micrófono de la barra superior. La música se detiene durante la precuenta de cuatro tiempos (1-2-3-4) y vuelve a sonar en el tiempo 1, justo al empezar la grabación. Pulsa durante la precuenta para cancelar. Cuando el LED se ponga rojo, pulsa de nuevo para terminar y abrir el estudio con las pistas de música y voz.'],
         ['Grabar capa sobre capa', 'Carga una pista en el looper y pulsa el micrófono. La pista arranca desde el principio en el tiempo 1 después de la precuenta, lista para que toques o cantes encima. Exporta la mezcla y cárgala de nuevo para grabar otra capa.'],
         ['Filtro de voz a posteriori', 'El micrófono conserva la toma cruda. En el Estudio de Maqueta, pulsa FILTRO VOZ para pasar de 0 a 3 LEDs esmeralda. Con 0 oyes la toma cruda. Los niveles 1, 2 y 3 reducen cada vez más el ruido y el sangrado de altavoz en las pausas. La onda ámbar refleja el ajuste y el filtro se aplica a la escucha, al MP3 y al vídeo.'],
+          ['Medidor y fader MASTER', 'MASTER ajusta de 0 a 200 % la suma de música, voz y base. SALIDA mide los picos antes de la etapa final. La barra pasa de verde a ámbar al acercarse a la raya de 0 dB y a rojo al superarla. La marca brillante sostiene el pico durante unos 900 ms. Pulsa el testigo CLIP para reiniciarlo junto con el pico sostenido.'],
+          ['Etapa final MASTER', 'LIMPIO deja pasar la mezcla en línea recta y permite el recorte natural al superar 0 dB. COMP (por defecto) controla los picos con compresión. CLIP aplica saturación suave al subir el nivel. El fader y la etapa elegida se aplican a la escucha en vivo, al MP3 y al vídeo corto.'],
         ['Saltar en la onda', 'Toca o haz clic en la onda para escuchar desde ese punto. Arrastra el cabezal blanco y suelta para saltar a otra posición dentro del recorte. La etiqueta del cabezal muestra el tiempo.'],
-        ['Editar y exportar', 'Recorta inicio y final, ajusta los dos volúmenes y compensa el desfase de la voz con SINCRO. El eco usa LED cian y el chorus, violetas. Escucha la mezcla y expórtala o compártela como MP3.']
+          ['Editar y exportar', 'Recorta inicio y final, ajusta los niveles de las pistas y compensa el desfase de la voz con SINCRO. El eco usa LED cian y el chorus, violetas. Escucha la mezcla y expórtala o compártela como MP3.']
       ]
     },
     {
@@ -107,8 +109,10 @@ export const HELP_CONTENT = {
         ['Record and mix', 'Press the microphone button in the top bar. The music stops during the four-beat count-in (1-2-3-4) and restarts on beat 1 as recording begins. Press during the count-in to cancel. Once the LED turns red, press again to finish and open the studio with the music and vocal tracks.'],
         ['Overdub layer by layer', 'Load a track into the looper and press the microphone button. The track starts from the beginning on beat 1 after the count-in so you can play or sing over it. Export the mix and load it again to add another layer.'],
         ['Voice filter after recording', 'The microphone preserves the raw take. In the Demo Studio, press VOICE FILTER to cycle from 0 to 3 emerald LEDs. Level 0 plays the raw take. Levels 1, 2 and 3 increasingly reduce noise and speaker bleed during pauses. The amber waveform reflects the setting, which applies to preview, MP3 and video.'],
+          ['MASTER meter and fader', 'MASTER sets the combined level of music, vocals and backing from 0 to 200%. OUTPUT measures peaks before the final stage. The bar goes from green to amber as the level approaches the 0 dB line, then turns red above it. The bright marker holds the peak for about 900 ms. Press the CLIP indicator to reset it and the held peak.'],
+          ['MASTER output stage', 'CLEAN passes the mix through at its original dynamics and lets it clip naturally above 0 dB. COMP (the default) controls peaks with compression. CLIP applies soft saturation as you push the level. The fader and selected stage apply to live preview, MP3 and short video.'],
         ['Seek on the waveform', 'Tap or click the waveform to play from that point. Drag the white playhead and release to jump to another position within the trim. The playhead label shows the time.'],
-        ['Edit and export', 'Trim the start and end, set both volumes and use SYNC to align the vocals. Echo uses cyan LEDs and chorus uses violet. Preview the mix and export or share it as an MP3.']
+          ['Edit and export', 'Trim the start and end, set the track levels and use SYNC to align the vocals. Echo uses cyan LEDs and chorus uses violet. Preview the mix and export or share it as an MP3.']
       ]
     },
     {

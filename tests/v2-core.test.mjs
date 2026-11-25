@@ -21,6 +21,7 @@ import { POPULAR_PROGRESSIONS, selectProgression, setProgressionVisualCallback }
 import { getState, setState } from '../js/state.js';
 import { getBackingTrackDestination, getDrumDestination, getMasterOutputNode, setBackingTrackVolume } from '../js/audio-core.js';
 import {
+  MASTER_MODES, dbToMeterRatio, linearPeakToDb, readLiveMasterMeter,
   buildFilteredVoiceSamples, getVoiceFilterPreset, getCurrentPreviewPositionSec, getStudioVoicePeaks,
   cancelDemoCountIn, isDemoCountIn, isDemoRecording, isDemoRecordingOrCountIn,
   renderFinalMixBuffer, renderFinalMixWav, startDemoPreviewPlayback, stopDemoPreviewPlayback,
@@ -521,7 +522,7 @@ class TestAudioParam {
   linearRampToValueAtTime() {}
   exponentialRampToValueAtTime() {}
   cancelScheduledValues() {}
-  setTargetAtTime(value, time) { this.targets.push({ value, time }); }
+  setTargetAtTime(value, time, timeConstant) { this.targets.push({ value, time, timeConstant }); }
 }
 
 class TestAudioNode extends EventTarget {
@@ -548,6 +549,20 @@ class TestAudioBuffer {
   getChannelData(channel) { return this.channels[channel]; }
   copyToChannel(samples, channel) { this.channels[channel].set(samples); }
 }
+
+test('la escala Master reserva seis segmentos por encima de la raya de 0 dB', () => {
+  assert.deepEqual(MASTER_MODES, ['clean', 'comp', 'clip']);
+  assert.ok(Object.isFrozen(MASTER_MODES));
+  assert.equal(linearPeakToDb(1), 0);
+  assert.equal(dbToMeterRatio(linearPeakToDb(1)), 36 / 42);
+  assert.equal(linearPeakToDb(2).toFixed(2), '6.02');
+  assert.equal(dbToMeterRatio(linearPeakToDb(2)), 1);
+  assert.equal(linearPeakToDb(0.5).toFixed(2), '-6.02');
+  assert.equal(linearPeakToDb(0), -Infinity);
+  assert.equal(dbToMeterRatio(linearPeakToDb(0)), 0);
+  assert.equal(dbToMeterRatio(-36), 0);
+  assert.ok(dbToMeterRatio(0.1) > dbToMeterRatio(0));
+});
 
 function mockAudioTimeouts(context, audio) {
   const timers = new Map();
@@ -1157,7 +1172,7 @@ test('la progresión mantiene sus tríadas en octava 0 al cambiar a Melodía en 
       assert.equal(getState().backingTrackPlaying, true);
       assert.equal(getDebugTelemetry().running, false);
       const frameStart = Math.ceil(downbeat * audio.sampleRate);
-      const samples = new Float32Array(2000);
+      const samples = new Float32Array(2000).fill(0.5);
       advanceAudioTo((frameStart + samples.length) / audio.sampleRate);
       worklet.port.onmessage({ data: { frame: frameStart, mL: samples, mR: samples, vM: samples } });
       const session = await stopDemoRecording();
@@ -1167,19 +1182,62 @@ test('la progresión mantiene sus tríadas en octava 0 al cambiar a Melodía en 
       assert.deepEqual(session.musicBuffer.getChannelData(0), samples);
       assert.ok(session.backingPeaks.every(peak => peak === 0.25));
       assert.equal(session.backingCaptureVol, 0.65);
-      const settings = { trimStartSec: 0.25, trimEndSec: 1.5, backingVol: 1.25 };
-      assert.ok(startDemoPreviewPlayback(settings, null, null, 0.5));
+      const settings = { trimStartSec: 0.25, trimEndSec: 1.5, backingVol: 1.25, masterVol: 2 };
+      let progressSample;
+      assert.ok(startDemoPreviewPlayback(settings, (position, meterData) => {
+        progressSample = { position, meterData };
+      }, null, 0.5));
       const previewBacking = trackSources(buffer).at(-1);
       assert.equal(previewBacking.offset, 0.5 + session.backingStartSec);
       assert.equal(previewBacking.duration, 1);
       const [backingGain] = previewBacking.connections;
       assert.equal(backingGain.gain.value, 1.25);
-      assert.equal(backingGain.connections[0].kind, 'compressor');
-      updateLivePreviewMix({ ...settings, backingVol: 0 });
+      const [bus] = backingGain.connections;
+      assert.equal(bus.gain.value, 2);
+      const musicGain = audio.nodes.findLast(node => node.buffer === session.musicBuffer).connections[0];
+      assert.deepEqual(musicGain.connections, [bus]);
+      const [left, splitter, clean, compressor, clipInput] = bus.connections;
+      const [right] = splitter.connections;
+      const [comp] = compressor.connections;
+      const [shaper] = clipInput.connections;
+      const [clip] = shaper.connections;
+      assert.deepEqual([clean, comp, clip].map(node => node.gain.value), [0, 1, 0]);
+      assert.ok([comp, clip].every(node => node.connections[0] === clean.connections[0]));
+      assert.deepEqual(['threshold', 'knee', 'ratio', 'attack', 'release'].map(key => compressor[key].value),
+        [-3, 12, 6, 0.004, 0.14]);
+      assert.equal(shaper.oversample, '2x');
+      const clipAt = sample => shaper.curve[(1 + sample * clipInput.gain.value) * (shaper.curve.length - 1) / 2];
+      assert.equal(clipAt(0.5), 0.5);
+      assert.ok(clipAt(1) < 1 && clipAt(2) > clipAt(1) && clipAt(2) <= 1);
+      assert.equal(clipAt(-2), -clipAt(2));
+      assert.equal(left.fftSize, 1024);
+      assert.equal(right.fftSize, 1024);
+      const sampleAt = channel => Math.fround((samples[0] * musicGain.gain.value +
+        buffer.getChannelData(channel)[0] * backingGain.gain.value) * bus.gain.value);
+      left.getFloatTimeDomainData = data => data.fill(sampleAt(0));
+      right.getFloatTimeDomainData = data => data.fill(sampleAt(1));
+      audio.currentTime = previewBacking.startTime + 0.25;
+      frame();
+      assert.equal(progressSample.position, 0.75);
+      assert.ok(Math.abs(progressSample.meterData.peakDb - linearPeakToDb(sampleAt(1))) < 1e-8);
+      assert.ok(Math.abs(progressSample.meterData.rmsDb -
+        linearPeakToDb(Math.hypot(sampleAt(0), sampleAt(1)) / Math.SQRT2)) < 1e-8);
+      assert.equal(progressSample.meterData.clipped, true);
+      assert.deepEqual(readLiveMasterMeter(), progressSample.meterData);
+
+      for (const [mode, masterVol] of [['clean', 0], ['clip', 1.5], ['comp', 3]]) {
+        updateLivePreviewMix({ ...settings, backingVol: 0, masterVol, masterMode: mode });
+        assert.deepEqual(bus.gain.targets.at(-1), {
+          value: Math.min(2, masterVol), time: audio.currentTime, timeConstant: 0.015
+        });
+        assert.deepEqual([clean, comp, clip].map(node => node.gain.targets.at(-1)),
+          MASTER_MODES.map(name => ({ value: Number(mode === name), time: audio.currentTime, timeConstant: 0.015 })));
+      }
       assert.equal(backingGain.gain.targets.at(-1).value, 0);
       assert.ok(startDemoPreviewPlayback(settings, null, null, 0.75));
       assert.equal(previewBacking.stopTimes.length, 1);
       stopDemoPreviewPlayback();
+      assert.deepEqual(readLiveMasterMeter(), { peakDb: -Infinity, rmsDb: -Infinity, clipped: false });
 
       const OfflineCtx = window.OfflineAudioContext;
       let offline;
@@ -1190,11 +1248,20 @@ test('la progresión mantiene sus tríadas en octava 0 al cambiar a Melodía en 
         }
       };
       try {
-        await renderFinalMixBuffer(settings);
+        await renderFinalMixBuffer({ ...settings, masterVol: 1.5, masterMode: 'clip' });
         const exportBacking = offline.nodes.find(node => node.buffer === buffer);
         assert.equal(exportBacking.offset, 0.25 + session.backingStartSec);
         assert.equal(exportBacking.duration, 1.25);
         assert.equal(exportBacking.connections[0].gain.value, 1.25);
+        const [exportBus] = exportBacking.connections[0].connections;
+        assert.equal(exportBus.gain.value, 1.5);
+        assert.ok(!offline.nodes.some(node => node.kind === 'analyser'));
+        const [exportClean, exportCompressor, exportClipInput] = exportBus.connections;
+        const [exportComp] = exportCompressor.connections;
+        const [exportShaper] = exportClipInput.connections;
+        const [exportClip] = exportShaper.connections;
+        assert.deepEqual([exportClean, exportComp, exportClip].map(node => node.gain.value), [0, 0, 1]);
+        assert.deepEqual(exportShaper.curve, shaper.curve);
       } finally {
         window.OfflineAudioContext = OfflineCtx;
       }
