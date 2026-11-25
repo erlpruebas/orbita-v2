@@ -40,9 +40,11 @@ import {
   importLooperSnapshot,
   loadLooperAudioBuffer,
   loadLooperAudioFile,
+  onBpmChanged,
   pressLooperClear,
   pressLooperPlayStop,
   pressLooperRec,
+  startArmedTransportAt,
   stopAllTransportForPlayback,
   toggleDrumPlayback,
   toggleProgressionPlayback
@@ -794,6 +796,67 @@ test('la progresión mantiene sus tríadas en octava 0 al cambiar a Melodía en 
     assert.equal(getState().looperState, 'idle');
     assert.equal(reverbSend.gain.targets.at(-1).value, 0.46);
 
+    await context.test('el lookahead mantiene pasos crecientes al cambiar de 92 a 130 y a 75 BPM', () => {
+      const { bpm, metronomeEnabled, selectedDrums, activeDrumSlot } = getState();
+      const firstNode = audio.nodes.length;
+      const firstOscillator = oscillators().length;
+      const stepTimes = () => audio.nodes.slice(firstNode)
+        .filter(node => node.kind === 'bufferSource' && node.connections[0]?.frequency?.value === 7200)
+        .map(node => node.startTime);
+      const stepDuration = bpm => 15 / bpm;
+      const origin = audio.currentTime + 0.01;
+      let expectedTime = origin;
+      const expected = [origin];
+      function scheduleSteps(bpm, count) {
+        for (let i = 0; i < count; i++) {
+          expectedTime += stepDuration(bpm);
+          audio.currentTime = expectedTime - 0.06;
+          schedulerTick();
+          expected.push(expectedTime);
+        }
+        assert.equal(stepTimes().length, expected.length);
+      }
+      function changeTempo(bpm) {
+        const last = stepTimes().at(-1);
+        assert.ok(last > audio.currentTime, 'el último golpe sigue en el lookahead');
+        onBpmChanged(bpm);
+        schedulerTick();
+        assert.equal(stepTimes().length, expected.length, 'no se repite el golpe que ya está programado');
+      }
+
+      setState({ bpm: 92, metronomeEnabled: false, selectedDrums: [17], activeDrumSlot: 0 });
+      importLooperSnapshot({
+        version: 1, bpm: 92, loopBars: 1, loopDurationSec: 240 / 92,
+        events: [{ offsetSec: 0, durationSec: 0.1, notes: [60], presetId: 3 }]
+      });
+      // Un charles cerrado por paso y una nota del looper al inicio de cada vuelta.
+      startArmedTransportAt(origin, { drumPlaying: true, looperPlaying: true });
+      try {
+        scheduleSteps(92, 5);
+        changeTempo(130);
+        scheduleSteps(130, 6);
+        changeTempo(75);
+        scheduleSteps(75, 8);
+        changeTempo(103);
+        scheduleSteps(103, 13);
+        const times = stepTimes();
+        for (let i = 1; i < times.length; i++) {
+          const gap = times[i] - times[i - 1];
+          assert.ok(times[i] > times[i - 1], `paso ${i}: el reloj se repitió o retrocedió`);
+          assert.ok(Math.abs(gap - (expected[i] - expected[i - 1])) < 1e-9, `paso ${i}: separación de ${gap}s`);
+        }
+        assert.ok(Math.abs(times[0] - origin) < 1e-9);
+        const downbeats = oscillators().slice(firstOscillator)
+          .filter(node => node.connections[0]?.kind === 'filter' && node.frequency.value === midiToFreq(60));
+        assert.equal(downbeats.length, 3);
+        downbeats.forEach((node, i) => assert.ok(Math.abs(node.startTime - times[i * 16]) < 1e-9));
+      } finally {
+        stopAllTransportForPlayback();
+        pressLooperClear();
+        setState({ bpm, metronomeEnabled, selectedDrums, activeDrumSlot });
+      }
+    });
+
     await context.test('la maqueta hace cuatro clics y relanza batería, looper y progresión en el mismo tiempo 1', async studio => {
       const advanceAudioTo = mockAudioTimeouts(studio, audio);
       setState({ accompaniment: 0, humanize: 0, selectedDrums: [0], activeDrumSlot: 0,
@@ -1230,8 +1293,17 @@ test('la progresión mantiene sus tríadas en octava 0 al cambiar a Melodía en 
       const [optionalClick] = atTime(oscillators(), metronomeAt);
       assert.equal(optionalClick.frequency.value, 1320);
       assert.equal(getDebugTelemetry().running, false);
+      const backingBpm = getState().bpm;
+      onBpmChanged(130);
+      assert.notEqual(optionalClick.stopTimes.at(-1), audio.currentTime);
+      const nextClickAt = metronomeAt + 60 / 130;
+      advanceAudioTo(nextClickAt - 0.06);
+      schedulerTick();
+      const [nextClick] = atTime(oscillators(), nextClickAt);
+      assert.equal(nextClick.frequency.value, 880);
       setState({ metronomeEnabled: false });
-      assert.equal(optionalClick.stopTimes.at(-1), audio.currentTime);
+      assert.equal(nextClick.stopTimes.at(-1), audio.currentTime);
+      onBpmChanged(backingBpm);
       assert.equal(schedulerTick, null);
       pressLooperPlayStop();
       advanceAudioTo(audio.currentTime + 1);

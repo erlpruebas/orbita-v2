@@ -24,6 +24,7 @@ let transportDrumOutput = null;
 // Estado temporal del reloj maestro
 let transportOriginTime = 0; // audioCtx.currentTime exacto del paso 0
 let nextStepToSchedule = 0;  // Contador absoluto de semicorcheas desde transportOriginTime
+let nextStepAudioTime = 0;
 let lastStepAudioTime = 0;
 let currentStepMod16 = 0;
 
@@ -46,6 +47,8 @@ let backingTrackSource = null;
 let backingTrackStartTime = 0;
 let backingTrackLoadId = 0;
 let backingMetronomeTimer = null;
+let nextBackingBeat = 0;
+let lastBackingBeatTime = null;
 
 // Telemetría de diagnóstico (?debug=1)
 let lastLooperDeltaMs = 0;
@@ -81,7 +84,8 @@ setAccompanimentHooks({
 });
 
 subscribe((_, keys) => {
-  if (keys.includes('metronomeEnabled') || keys.includes('bpm')) refreshBackingTrackMetronome();
+  if (keys.includes('metronomeEnabled')) refreshBackingTrackMetronome();
+  else if (keys.includes('bpm')) refreshBackingTrackMetronome(true);
 });
 
 function getBeatDurSec() {
@@ -163,6 +167,7 @@ function startTransportAt(originAudioTime) {
   running = true;
   transportOriginTime = originAudioTime ?? (ctx.currentTime + 0.015);
   nextStepToSchedule = 0;
+  nextStepAudioTime = transportOriginTime;
   currentStepMod16 = 0;
   lastStepAudioTime = transportOriginTime;
 
@@ -217,22 +222,29 @@ function stopScheduledMetronomeClicks() {
 }
 
 // El metrónomo de una pista sola es opcional y no arranca el reloj de los instrumentos.
-function refreshBackingTrackMetronome() {
-  stopBackingTrackMetronome();
+function refreshBackingTrackMetronome(tempoChanged = false) {
   const st = getState();
-  if (!backingTrackSource || running || countInActive || !st.metronomeEnabled) return;
+  if (!backingTrackSource || running || countInActive || !st.metronomeEnabled) {
+    stopBackingTrackMetronome();
+    return;
+  }
+  if (tempoChanged && backingMetronomeTimer !== null) clearInterval(backingMetronomeTimer);
+  else stopBackingTrackMetronome();
 
   const ctx = ensureAudioUnlocked();
   const beatDur = getBeatDurSec();
   const endTime = backingTrackStartTime + st.loadedTrackDuration;
-  let nextBeat = 0;
+  // Los clics ya en el lookahead conservan su instante y su posición en el compás.
+  const gridOrigin = lastBackingBeatTime === null ? backingTrackStartTime
+    : Math.max(ctx.currentTime + 0.005, lastBackingBeatTime + beatDur) - nextBackingBeat * beatDur;
   const tick = () => {
     const now = ctx.currentTime;
-    nextBeat = Math.max(nextBeat, Math.ceil((now - backingTrackStartTime) / beatDur));
-    let when = backingTrackStartTime + nextBeat * beatDur;
+    nextBackingBeat = Math.max(nextBackingBeat, Math.ceil((now - gridOrigin) / beatDur));
+    let when = gridOrigin + nextBackingBeat * beatDur;
     while (when < endTime && when <= now + SCHEDULE_AHEAD_SEC) {
-      scheduleMetronomeClick(when, nextBeat % 4 === 0);
-      when = backingTrackStartTime + ++nextBeat * beatDur;
+      scheduleMetronomeClick(when, nextBackingBeat % 4 === 0);
+      lastBackingBeatTime = when;
+      when = gridOrigin + ++nextBackingBeat * beatDur;
     }
   };
   tick();
@@ -243,6 +255,8 @@ function stopBackingTrackMetronome() {
   if (backingMetronomeTimer === null) return;
   clearInterval(backingMetronomeTimer);
   backingMetronomeTimer = null;
+  nextBackingBeat = 0;
+  lastBackingBeatTime = null;
   stopScheduledMetronomeClicks();
 }
 
@@ -267,13 +281,10 @@ function schedulerTick() {
   const now = ctx.currentTime;
   const stepDur = getStepDurSec();
 
-  while (true) {
-    const stepTime = transportOriginTime + nextStepToSchedule * stepDur;
-    if (stepTime > now + SCHEDULE_AHEAD_SEC) {
-      break;
-    }
-    scheduleSingleStep(nextStepToSchedule, stepTime);
+  while (nextStepAudioTime <= now + SCHEDULE_AHEAD_SEC) {
+    scheduleSingleStep(nextStepToSchedule, nextStepAudioTime);
     nextStepToSchedule++;
+    nextStepAudioTime += stepDur;
   }
 }
 
@@ -308,8 +319,9 @@ function scheduleSingleStep(absStepIndex, stepTime) {
   // 4. REPRODUCCIÓN DEL LOOPER: Dispara eventos grabados que caen dentro de la ventana de este paso
   if ((st.looperState === 'playing' || (st.looperState === 'recording' && isOverdubbing)) && loopDurationSec > 0 && loopEvents.length > 0) {
     const stepDur = getStepDurSec();
-    const relTimeStart = (absStepIndex * stepDur);
-    const cycleIndex = Math.floor(relTimeStart / loopDurationSec);
+    const relTimeStart = absStepIndex * stepDur;
+    // Los cambios de BPM pueden dejar el cociente justo por debajo de un compás entero.
+    const cycleIndex = Math.floor(relTimeStart / loopDurationSec + 1e-9);
     const windowStart = relTimeStart - cycleIndex * loopDurationSec;
     const windowEnd = windowStart + stepDur;
 
@@ -322,7 +334,7 @@ function scheduleSingleStep(absStepIndex, stepTime) {
         if (ev.lastTriggeredCycle !== cycleIndex || ev.lastTriggeredStep !== absStepIndex) {
           ev.lastTriggeredCycle = cycleIndex;
           ev.lastTriggeredStep = absStepIndex;
-          const exactEventTime = transportOriginTime + cycleIndex * loopDurationSec + ev.offsetSec;
+          const exactEventTime = stepTime + ev.offsetSec - windowStart;
           const preset = getPresetById(ev.presetId);
           const handle = startHumanizedVoiceGroup(ev.notes, {
             preset,
@@ -520,13 +532,14 @@ export function onBpmChanged(newBpm) {
     });
   }
 
-  setState({ bpm: clamped });
-
-  if (running) {
+  if (running && nextStepToSchedule > 0) {
     const ctx = ensureAudioUnlocked();
-    const stepDur = (60 / clamped) / 4;
-    transportOriginTime = ctx.currentTime - (nextStepToSchedule * stepDur);
+    const newStepDur = (60 / clamped) / 4;
+    nextStepAudioTime = Math.max(ctx.currentTime + 0.005, lastStepAudioTime + newStepDur);
+    transportOriginTime = nextStepAudioTime - nextStepToSchedule * newStepDur;
   }
+
+  setState({ bpm: clamped });
 }
 
 /**

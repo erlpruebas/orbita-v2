@@ -86,7 +86,7 @@ test('el teclado Custom reproduce el zigzag del chasis y la PWA usa la caché ac
     .map(file => readFile(new URL(file, root), 'utf8')));
   assert.match(css, /html, body\s*\{[^}]*height:\s*100dvh;[^}]*overflow:\s*clip/);
   assert.match(tokens, /--chassis-bg:\s*#141518;/);
-  assert.match(serviceWorker, /const CACHE_NAME = 'orbita-v2-hw-v6';/);
+  assert.match(serviceWorker, /const CACHE_NAME = 'orbita-v2-hw-v7';/);
 });
 
 test('el looper tiene cuatro botones de 32 px y un selector de audio oculto', async () => {
@@ -110,9 +110,42 @@ test('el estudio muestra el filtro, la onda interactiva y los cuatro estilos de 
   const styles = studio.match(/id="video-style-grid"[^>]*>([\s\S]*?)<\/div>/)[1];
   assert.deepEqual([...styles.matchAll(/<button[^>]+id="btn-video-style-([\w-]+)"[^>]+data-video-style="\1"/g)]
     .map(([, style]) => style), VIDEO_STYLES);
+  const names = {
+    es: ['1 · Puro', '2 · Escenario', '3 · Club', '4 · Videoclip'],
+    en: ['1 · Pure', '2 · Stage', '3 · Club', '4 · Music Video']
+  };
+  for (const lang of languages) {
+    assert.deepEqual(VIDEO_STYLES.map(style => t(`studio.video.${style}`, lang)), names[lang]);
+  }
+  for (const style of VIDEO_STYLES) {
+    for (const key of [`studio.video.${style}`, `studio.video.${style}Desc`]) {
+      assert.ok(styles.includes(`data-i18n="${key}">${t(key, 'es')}<`));
+    }
+    assert.notEqual(t(`studio.video.${style}Desc`, 'es'), t(`studio.video.${style}Desc`, 'en'));
+  }
   const css = await readFile(new URL('css/modals.css', root), 'utf8');
   assert.match(css, /\.studio-fx-grid\s*\{[^}]*grid-template-columns:\s*repeat\(3, 1fr\)/);
   assert.match(css, /\.demo-waveform-canvas\s*\{[^}]*cursor:\s*pointer;[^}]*touch-action:\s*none/);
+});
+
+test('el ajuste fino de SINCRO empieza plegado y se oculta cuando no hay voz', async () => {
+  const mixer = html.slice(html.indexOf('class="studio-mixer-box"'), html.indexOf('class="studio-fx-grid"'));
+  const [, attributes, content] = mixer.match(/<details\b([^>]*\bid="studio-sync-details"[^>]*)>([\s\S]*?)<\/details>/);
+  assert.match(attributes, /class="studio-sync-details"/);
+  assert.match(attributes, /\bhidden\b/);
+  assert.doesNotMatch(attributes, /\bopen\b/);
+  assert.match(content, /<summary id="studio-sync-summary">[\s\S]*?data-i18n="studio.syncFine"[\s\S]*?id="studio-sync-summary-val"[^>]*>-110ms<\/span><\/summary>/);
+  const [, row] = content.match(/id="mix-sync-row">([\s\S]*)/);
+  for (const id of ['btn-sync-minus', 'mix-voice-sync', 'btn-sync-plus', 'btn-sync-auto', 'mix-sync-val']) {
+    assert.ok(row.includes(`id="${id}"`));
+  }
+  assert.equal(t('studio.syncFine', 'es'), 'Ajuste fino SINCRO');
+  assert.equal(t('studio.syncFine', 'en'), 'Fine SYNC');
+  const [css, ui] = await Promise.all(['css/modals.css', 'js/ui-modals.js']
+    .map(file => readFile(new URL(file, root), 'utf8')));
+  assert.match(css, /\.studio-sync-details\[hidden\]\s*\{\s*display:\s*none/);
+  assert.match(ui, /syncDetails\.hidden\s*=\s*!session\.hasVoiceTrack;\s*syncDetails\.open\s*=\s*false/);
+  assert.match(ui, /syncSummaryVal\.textContent\s*=\s*syncReadout/);
 });
 
 test('la pista cargada tiene faders de 0 a 150% en CONFIG y en el mezclador de maqueta', async () => {
@@ -194,6 +227,6 @@ test('la ayuda bilingüe incluye una sección dedicada a la estadística de nota
   assert.match(en.topics.flat().join(' '), /frequencies.*presence.*rolling 20-second window.*red.*orange.*yellow.*green.*major or minor.*reference pitch.*voice/i);
   assert.match(HELP_CONTENT.es.flatMap(({ topics }) => topics.flat()).join(' '), /zigzag.*Mayor \(M.*menor \(m.*octava 0.*Melodía/);
   assert.match(HELP_CONTENT.en.flatMap(({ topics }) => topics.flat()).join(' '), /zigzag.*Major \(M.*minor \(m.*octave 0.*Melody/);
-  assert.match(HELP_CONTENT.es.flatMap(({ topics }) => topics.flat()).join(' '), /Filtro de voz a posteriori.*0 a 3 LEDs.*Toca o haz clic en la onda.*Puro.*Teclado.*Órbita.*Cosmos/);
-  assert.match(HELP_CONTENT.en.flatMap(({ topics }) => topics.flat()).join(' '), /Voice filter after recording.*0 to 3 emerald LEDs.*Tap or click the waveform.*Pure.*Keys.*Orbit.*Cosmos/);
+  assert.match(HELP_CONTENT.es.flatMap(({ topics }) => topics.flat()).join(' '), /Filtro de voz a posteriori.*0 a 3 LEDs.*Toca o haz clic en la onda.*Ajuste fino SINCRO.*Puro.*Escenario.*Club.*Videoclip/);
+  assert.match(HELP_CONTENT.en.flatMap(({ topics }) => topics.flat()).join(' '), /Voice filter after recording.*0 to 3 emerald LEDs.*Tap or click the waveform.*Fine SYNC.*Pure.*Stage.*Club.*Music Video/);
 });

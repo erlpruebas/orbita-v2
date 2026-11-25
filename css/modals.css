@@ -799,25 +799,33 @@
   accent-color: var(--led-violet-bright);
 }
 
-.mixer-label.is-sync {
+.studio-sync-details {
+  min-width: 0;
+  border-top: 1px solid #1b1f27;
+  font: 11px/1.3 var(--font-mono);
+}
+
+.studio-sync-details[hidden] {
+  display: none;
+}
+
+.studio-sync-details > summary {
+  padding: 5px 0;
+  white-space: nowrap;
+  cursor: pointer;
+  color: var(--text-secondary);
+}
+
+.studio-sync-details > summary::marker {
   color: var(--led-cyan-bright);
 }
 
 .sync-row {
   display: grid;
-  grid-template-columns: 56px minmax(0, 1fr) 52px;
+  grid-template-columns: minmax(0, 1fr) 52px;
   align-items: center;
   gap: 8px;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--text-secondary);
-  padding-top: 4px;
-  border-top: 1px solid #1b1f27;
-}
-
-.sync-row.is-disabled {
-  opacity: 0.42;
-  pointer-events: none;
+  padding: 3px 0;
 }
 
 .sync-controls {

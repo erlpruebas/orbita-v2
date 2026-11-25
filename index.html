@@ -763,16 +763,18 @@
               <input type="range" id="mix-backing-vol" min="0" max="150" value="90" />
               <span id="mix-backing-val" class="slider-val">90%</span>
             </label>
-            <div class="sync-row" id="mix-sync-row">
-              <span class="mixer-label is-sync" data-i18n="studio.sync" data-i18n-title="studio.syncTitle">SINCRO</span>
-              <div class="sync-controls">
-                <button type="button" id="btn-sync-minus" class="hw-btn sync-mini-btn" title="Adelantar voz 10 ms" data-i18n-title="studio.syncMinus">-10</button>
-                <input type="range" id="mix-voice-sync" min="-400" max="150" step="1" value="-110" data-i18n-aria="studio.syncTitle" />
-                <button type="button" id="btn-sync-plus" class="hw-btn sync-mini-btn" title="Retrasar voz 10 ms" data-i18n-title="studio.syncPlus">+10</button>
-                <button type="button" id="btn-sync-auto" class="hw-btn sync-auto-btn" title="Auto-alinear voz con los golpes de música" data-i18n-title="studio.syncAuto" data-i18n="studio.auto">AUTO</button>
+            <details id="studio-sync-details" class="studio-sync-details" hidden>
+              <summary id="studio-sync-summary"><span data-i18n="studio.syncFine">Ajuste fino SINCRO</span> · <span id="studio-sync-summary-val" class="slider-val">-110ms</span></summary>
+              <div class="sync-row" id="mix-sync-row">
+                <div class="sync-controls">
+                  <button type="button" id="btn-sync-minus" class="hw-btn sync-mini-btn" title="Adelantar voz 10 ms" data-i18n-title="studio.syncMinus">-10</button>
+                  <input type="range" id="mix-voice-sync" min="-400" max="150" step="1" value="-110" data-i18n-aria="studio.syncTitle" />
+                  <button type="button" id="btn-sync-plus" class="hw-btn sync-mini-btn" title="Retrasar voz 10 ms" data-i18n-title="studio.syncPlus">+10</button>
+                  <button type="button" id="btn-sync-auto" class="hw-btn sync-auto-btn" title="Auto-alinear voz con los golpes de música" data-i18n-title="studio.syncAuto" data-i18n="studio.auto">AUTO</button>
+                </div>
+                <span id="mix-sync-val" class="slider-val">-110ms</span>
               </div>
-              <span id="mix-sync-val" class="slider-val">-110ms</span>
-            </div>
+            </details>
             <label class="mixer-row" id="mix-master-row">
               <span class="mixer-label is-master">MASTER</span>
               <input type="range" id="mix-master-vol" min="0" max="200" value="100" />
@@ -845,19 +847,19 @@
             <div id="video-style-grid" class="video-style-grid" role="group" aria-label="Estilo de vídeo" data-i18n-aria="studio.video.style">
               <button type="button" id="btn-video-style-pure" class="hw-btn video-style-btn" data-video-style="pure" aria-pressed="true">
                 <strong data-i18n="studio.video.pure">1 · Puro</strong>
-                <span data-i18n="studio.video.pureDesc">Cámara limpia u OLED</span>
+                <span data-i18n="studio.video.pureDesc">Cine limpio y minimalista</span>
               </button>
               <button type="button" id="btn-video-style-keys" class="hw-btn video-style-btn" data-video-style="keys" aria-pressed="false">
-                <strong data-i18n="studio.video.keys">2 · Teclado</strong>
-                <span data-i18n="studio.video.keysDesc">7 teclas y acordes</span>
+                <strong data-i18n="studio.video.keys">2 · Escenario</strong>
+                <span data-i18n="studio.video.keysDesc">Teclado neón y haces de luz</span>
               </button>
               <button type="button" id="btn-video-style-orbit" class="hw-btn video-style-btn" data-video-style="orbit" aria-pressed="false">
-                <strong data-i18n="studio.video.orbit">3 · Órbita</strong>
-                <span data-i18n="studio.video.orbitDesc">Constelación de notas</span>
+                <strong data-i18n="studio.video.orbit">3 · Club</strong>
+                <span data-i18n="studio.video.orbitDesc">Luces de concierto y efecto RGB</span>
               </button>
               <button type="button" id="btn-video-style-cosmos" class="hw-btn video-style-btn" data-video-style="cosmos" aria-pressed="false">
-                <strong data-i18n="studio.video.cosmos">4 · Cosmos</strong>
-                <span data-i18n="studio.video.cosmosDesc">Estrellas y neón</span>
+                <strong data-i18n="studio.video.cosmos">4 · Videoclip</strong>
+                <span data-i18n="studio.video.cosmosDesc">Prisma, duotono y túnel estelar</span>
               </button>
             </div>
             <input type="text" id="demo-video-title-input" maxlength="40" placeholder="Título del vídeo (opcional)" aria-label="Título del vídeo (opcional)" data-i18n-placeholder="studio.video.titleInput" data-i18n-aria="studio.video.titleInput">

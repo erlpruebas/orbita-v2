@@ -792,17 +792,16 @@ function updateStudioControlsDOM() {
   const vVal = document.getElementById('mix-voice-val');
   const bVal = document.getElementById('mix-backing-val');
   const syncVal = document.getElementById('mix-sync-val');
+  const syncSummaryVal = document.getElementById('studio-sync-summary-val');
   const syncSlider = document.getElementById('mix-voice-sync');
   if (mVal) mVal.textContent = `${Math.round(studioMix.musicVol * 100)}%`;
   if (vVal) vVal.textContent = `${Math.round(studioMix.voiceVol * 100)}%`;
   if (bVal) bVal.textContent = `${Math.round(studioMix.backingVol * 100)}%`;
-  if (syncVal) {
-    const ms = Math.round(studioMix.voiceOffsetMs || 0);
-    syncVal.textContent = `${ms > 0 ? '+' : ''}${ms}ms`;
-  }
-  if (syncSlider) {
-    syncSlider.value = String(Math.round(studioMix.voiceOffsetMs || 0));
-  }
+  const ms = Math.round(studioMix.voiceOffsetMs || 0);
+  const syncReadout = `${ms > 0 ? '+' : ''}${ms}ms`;
+  if (syncVal) syncVal.textContent = syncReadout;
+  if (syncSummaryVal) syncSummaryVal.textContent = syncReadout;
+  if (syncSlider) syncSlider.value = String(ms);
 
   // LEDs de Eco (0..3 cian)
   for (let i = 1; i <= 3; i++) {
@@ -1124,7 +1123,7 @@ async function shareDemoVideo() {
 function openDemoStudioModal(session) {
   const modal = document.getElementById('modal-demo-result');
   const voiceRow = document.getElementById('mix-voice-row');
-  const syncRow = document.getElementById('mix-sync-row');
+  const syncDetails = document.getElementById('studio-sync-details');
   const btnEcho = document.getElementById('btn-voice-echo');
   const btnChorus = document.getElementById('btn-voice-chorus');
   const startRange = document.getElementById('trim-start-range');
@@ -1164,7 +1163,8 @@ function openDemoStudioModal(session) {
   document.getElementById('mix-backing-row').hidden = !session.hasBackingTrack;
 
   if (voiceRow) voiceRow.classList.toggle('is-disabled', !session.hasVoiceTrack);
-  if (syncRow) syncRow.classList.toggle('is-disabled', !session.hasVoiceTrack);
+  syncDetails.hidden = !session.hasVoiceTrack;
+  syncDetails.open = false;
   if (btnEcho) btnEcho.disabled = !session.hasVoiceTrack;
   if (btnChorus) btnChorus.disabled = !session.hasVoiceTrack;
   document.getElementById('btn-voice-filter').disabled = !session.hasVoiceTrack;

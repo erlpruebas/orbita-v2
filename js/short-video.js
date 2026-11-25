@@ -58,7 +58,8 @@ export async function prepareFrontCamera() {
       stream,
       start() {
         try {
-          recorder.start(250);
+          // Una sola entrega al parar permite al contenedor incluir la duración para el recorte.
+          recorder.start();
           return true;
         } catch (_) {
           release();
@@ -101,6 +102,25 @@ function waitForVideo(video, event, signal) {
   });
 }
 
+async function loadCamera(video, url, trimStart, signal) {
+  const ready = waitForVideo(video, 'loadeddata', signal);
+  video.src = url;
+  await ready;
+  if (!(trimStart > 0)) return;
+  const end = Number.isFinite(video.duration) ? Math.max(0, video.duration - 0.01) : trimStart;
+  const offset = Math.min(trimStart, end);
+  if (offset <= 0) return;
+
+  const seek = waitForVideo(video, 'seeked', signal);
+  video.currentTime = offset;
+  try {
+    await seek;
+  } catch (error) {
+    signal.throwIfAborted();
+    if (video.readyState < 2 || Math.abs(video.currentTime - offset) > 0.05) throw error;
+  }
+}
+
 const FRAME_WIDTH = 720;
 const FRAME_HEIGHT = 1280;
 const FRAME_RATE = 30;
@@ -109,21 +129,21 @@ const BAR_COUNT = 36;
 const INSET = 48;
 const CONTENT_WIDTH = FRAME_WIDTH - 2 * INSET;
 const EMERALD = '#34d399';
-const AMBER = '#fbbf24';
 const CHASSIS = '#141518';
 const TAU = 2 * Math.PI;
 const CENTER_X = FRAME_WIDTH / 2;
 const TITLE_FONT = '800 56px system-ui, sans-serif';
 const MONO_FONT = '600 24px monospace';
-const KEY_ROWS = [[1, 3, 5], [0, 2, 4, 6]];
 const ROOT_HUES = [155, 338, 199, 283, 47, 315, 179, 223, 14, 265, 94, 354];
+const PETALS_BY_ROOT = [6, 3, 8, 5, 3, 6, 8, 5, 6, 3, 8, 5];
 
 function drawCameraCover(ctx, video, zoom = 1) {
-  const scale = Math.max(FRAME_WIDTH / video.videoWidth, FRAME_HEIGHT / video.videoHeight) * zoom;
+  const { width: frameWidth, height: frameHeight } = ctx.canvas;
+  const scale = Math.max(frameWidth / video.videoWidth, frameHeight / video.videoHeight) * zoom;
   const width = video.videoWidth * scale;
   const height = video.videoHeight * scale;
   ctx.save();
-  ctx.translate(FRAME_WIDTH / 2, FRAME_HEIGHT / 2);
+  ctx.translate(frameWidth / 2, frameHeight / 2);
   ctx.scale(-1, 1);
   ctx.drawImage(video, -width / 2, -height / 2, width, height);
   ctx.restore();
@@ -171,6 +191,128 @@ function hueColor(hue, lightness, alpha = 1) {
   return `hsla(${hue}, 94%, ${lightness}%, ${alpha})`;
 }
 
+function canvasSurface(width, height) {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  return canvas.getContext('2d');
+}
+
+// Las luces se rasterizan una vez por exportación y se reusan con distintas escalas.
+function makeLightSprites(includeBokeh) {
+  return ROOT_HUES.map(hue => {
+    const softLight = canvasSurface(128, 128);
+    const glow = softLight.createRadialGradient(64, 64, 0, 64, 64, 64);
+    glow.addColorStop(0, hueColor(hue, 85, 0.95));
+    glow.addColorStop(0.17, hueColor(hue, 70, 0.66));
+    glow.addColorStop(0.48, hueColor(hue, 57, 0.23));
+    glow.addColorStop(1, hueColor(hue, 50, 0));
+    softLight.fillStyle = glow;
+    softLight.fillRect(0, 0, 128, 128);
+
+    const beam = canvasSurface(128, 256);
+    const length = beam.createLinearGradient(0, 0, 0, 256);
+    length.addColorStop(0, hueColor(hue, 52, 0));
+    length.addColorStop(0.4, hueColor(hue, 55, 0.18));
+    length.addColorStop(0.84, hueColor(hue, 68, 0.62));
+    length.addColorStop(1, hueColor(hue, 90, 0.94));
+    beam.fillStyle = length;
+    beam.fillRect(0, 0, 128, 256);
+    beam.globalCompositeOperation = 'destination-in';
+    const width = beam.createLinearGradient(0, 0, 128, 0);
+    width.addColorStop(0, 'transparent');
+    width.addColorStop(0.38, '#0009');
+    width.addColorStop(0.5, '#000');
+    width.addColorStop(0.62, '#0009');
+    width.addColorStop(1, 'transparent');
+    beam.fillStyle = width;
+    beam.fillRect(0, 0, 128, 256);
+    const sprite = { glow: softLight.canvas, beam: beam.canvas };
+    if (includeBokeh) {
+      const disc = canvasSurface(96, 96);
+      const rim = disc.createRadialGradient(48, 48, 0, 48, 48, 48);
+      rim.addColorStop(0, hueColor(hue, 78, 0.48));
+      rim.addColorStop(0.57, hueColor(hue, 73, 0.34));
+      rim.addColorStop(0.72, hueColor(hue, 79, 0.42));
+      rim.addColorStop(1, hueColor(hue, 68, 0));
+      disc.fillStyle = rim;
+      disc.fillRect(0, 0, 96, 96);
+      sprite.bokeh = disc.canvas;
+    }
+    return sprite;
+  });
+}
+
+function makeCameraEffects(ctx, video, style) {
+  if (!video || (style !== 'orbit' && style !== 'cosmos')) return null;
+  const width = 252;
+  const height = 448;
+  const camera = canvasSurface(width, height);
+  const layer = canvasSurface(width, height);
+
+  function tint(color, image) {
+    layer.globalCompositeOperation = 'source-over';
+    layer.drawImage(image, 0, 0);
+    layer.globalCompositeOperation = 'multiply';
+    layer.fillStyle = color;
+    layer.fillRect(0, 0, width, height);
+  }
+
+  function rgbSplit(amount) {
+    ctx.globalCompositeOperation = 'screen';
+    ctx.globalAlpha = 0.52 * amount;
+    const shift = 3 + 22 * amount;
+    tint('#18e6ff', camera.canvas);
+    ctx.drawImage(layer.canvas, -shift, 1, FRAME_WIDTH, FRAME_HEIGHT);
+    tint('#ff1eb8', camera.canvas);
+    ctx.drawImage(layer.canvas, shift, -1, FRAME_WIDTH, FRAME_HEIGHT);
+  }
+
+  function prism(hue, amount, elapsed) {
+    // El modo diferencia extrae los contornos del propio fotograma sin leer píxeles.
+    layer.globalCompositeOperation = 'source-over';
+    layer.drawImage(camera.canvas, 0, 0);
+    layer.globalCompositeOperation = 'difference';
+    layer.drawImage(camera.canvas, 2, 1);
+    layer.globalCompositeOperation = 'source-over';
+    layer.fillStyle = '#000';
+    layer.fillRect(0, 0, 2, height);
+    layer.fillRect(0, 0, width, 1);
+
+    camera.globalCompositeOperation = 'saturation';
+    camera.fillStyle = '#808080';
+    camera.fillRect(0, 0, width, height);
+    camera.globalCompositeOperation = 'multiply';
+    camera.fillStyle = hueColor(hue, 76);
+    camera.fillRect(0, 0, width, height);
+    camera.globalCompositeOperation = 'screen';
+    camera.fillStyle = hueColor(hue + 65, 12);
+    camera.fillRect(0, 0, width, height);
+    camera.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = 0.61 + 0.17 * amount;
+    ctx.drawImage(camera.canvas, 0, 0, FRAME_WIDTH, FRAME_HEIGHT);
+
+    // Dos ecos de esos contornos, con tintes y desplazamientos opuestos.
+    camera.drawImage(layer.canvas, 0, 0);
+    ctx.globalCompositeOperation = 'screen';
+    ctx.globalAlpha = 0.37 + 0.50 * amount;
+    const shift = 12 + 49 * amount + 9 * Math.sin(elapsed * 2.4);
+    tint(hueColor(hue + 28, 71), camera.canvas);
+    ctx.drawImage(layer.canvas, -shift, -shift * 0.25, FRAME_WIDTH, FRAME_HEIGHT);
+    tint(hueColor(hue + 168, 70), camera.canvas);
+    ctx.drawImage(layer.canvas, shift, shift * 0.25, FRAME_WIDTH, FRAME_HEIGHT);
+  }
+
+  return (zoom, hue, amount, elapsed) => {
+    if (style === 'orbit' && amount < 0.045) return;
+    drawCameraCover(camera, video, zoom);
+    ctx.save();
+    if (style === 'orbit') rgbSplit(amount);
+    else prism(hue, amount, elapsed);
+    ctx.restore();
+  };
+}
+
 function pitchAngle(pc) {
   return (pc / 12 - 0.25) * TAU;
 }
@@ -182,9 +324,16 @@ function pointOnRing(angle, radius, cy) {
 function makeFrameRenderer(ctx, video, analyser, sampleRate, meta) {
   const style = VIDEO_STYLES.includes(meta.styleId) ? meta.styleId : VIDEO_STYLES[0];
   const titleLines = getTitleLines(ctx, meta.title?.trim().slice(0, 40));
-  const keyboardDegrees = meta.keyboardDegrees ?? [];
-  const chromaticLabels = Array.from({ length: 12 }, (_, pc) => getNoteNameTitle(pc, meta.notation));
   const events = (meta.noteEvents ?? []).map(event => ({ ...event, endSec: event.timeSec + event.durationSec }));
+  const pitchLabels = Array.from({ length: 12 }, (_, pc) => getNoteNameTitle(pc, meta.notation));
+  const positions = Array.from({ length: 7 }, (_, index) => ({
+    x: 147 + index * 71,
+    upper: index % 2 === 1,
+    degree: meta.keyboardDegrees?.[index],
+    level: 0,
+    struckAt: -Infinity
+  }));
+
   const spectrum = new Uint8Array(analyser.frequencyBinCount);
   const waveform = new Float32Array(analyser.fftSize);
   const bands = new Float32Array(BAR_COUNT);
@@ -194,58 +343,108 @@ function makeFrameRenderer(ctx, video, analyser, sampleRate, meta) {
     return Math.min(spectrum.length - 1, Math.floor(hz * analyser.fftSize / sampleRate));
   });
 
-  const shade = ctx.createLinearGradient(0, 590, 0, FRAME_HEIGHT);
-  shade.addColorStop(0, '#07090c00');
-  shade.addColorStop(0.68, '#07090cc9');
-  shade.addColorStop(1, '#07090cf5');
-  const metal = ctx.createLinearGradient(0, 0, FRAME_WIDTH, FRAME_HEIGHT);
-  metal.addColorStop(0, '#22252a');
-  metal.addColorStop(0.48, CHASSIS);
-  metal.addColorStop(1, '#101114');
+  const sprites = style === 'pure' ? [] : makeLightSprites(style === 'orbit');
+  const cameraEffects = makeCameraEffects(ctx, video, style);
+  const vignette = video && ctx.createRadialGradient(CENTER_X, 595, 350, CENTER_X, 595, 744);
+  if (vignette) {
+    vignette.addColorStop(0, '#08090b00');
+    vignette.addColorStop(0.8, '#08090b18');
+    vignette.addColorStop(1, '#08090b86');
+  }
+  const lowerShade = ctx.createLinearGradient(0, 665, 0, FRAME_HEIGHT);
+  lowerShade.addColorStop(0, '#08091300');
+  lowerShade.addColorStop(1, '#080913c8');
   const oled = ctx.createLinearGradient(INSET, 0, FRAME_WIDTH - INSET, 0);
-  oled.addColorStop(0, EMERALD);
-  oled.addColorStop(1, AMBER);
+  oled.addColorStop(0, '#49ffe4');
+  oled.addColorStop(0.54, '#8e88ff');
+  oled.addColorStop(1, '#ff7ac9');
+  const stars = Array.from({ length: 84 }, (_, i) => ({
+    angle: i * 2.399963,
+    depth: (i * 73 % 89) / 89,
+    speed: 0.75 + i % 7 * 0.09
+  }));
 
+  let lastElapsed = 0;
   let pulse = 0;
+  let bass = 0;
+  let attack = 0;
+  let travel = 0;
   let eventIndex = 0;
   let active = [];
   let bursts = [];
-  let hue = ROOT_HUES[0];
-  const stars = Array.from({ length: 96 }, (_, index) => ({
-    angle: index * 2.399963,
-    depth: ((index * 73) % 97) / 97,
-    speed: 0.15 + (index % 7) * 0.025
-  }));
+  let chord = null;
+  let root = 0;
+  let label = '';
+  let previousLabel = '';
+  let labelAt = -Infinity;
+  let flashAt = -Infinity;
+  let flashRoot = 0;
 
-  function readAudio() {
+  function readAudio(dt) {
     analyser.getFloatTimeDomainData(waveform);
+    if (style === 'pure') return;
+    analyser.getByteFrequencyData(spectrum);
     let power = 0;
     for (const sample of waveform) power += sample * sample;
-    const energy = Math.min(1, Math.sqrt(power / waveform.length) * 3.6);
-    pulse += (energy - pulse) * (energy > pulse ? 0.45 : 0.16);
-    if (style === 'pure') return;
-
-    analyser.getByteFrequencyData(spectrum);
+    const energy = Math.min(1, Math.sqrt(power / waveform.length) * 4.1);
     for (let i = 0; i < bands.length; i++) {
       const end = Math.max(bandEdges[i] + 1, bandEdges[i + 1]);
       let peak = 0;
       for (let bin = bandEdges[i]; bin < end; bin++) peak = Math.max(peak, spectrum[bin]);
       bands[i] = (peak / 255) ** 1.6;
     }
+    const low = (bands[0] + bands[3] + bands[6]) / 3;
+    const onset = Math.max(0, (energy - pulse) * 3.5, (low - bass) * 2.1);
+    attack = Math.min(1, Math.max(onset, attack * Math.exp(-9 * dt)));
+    pulse += (energy - pulse) * (1 - Math.exp(-dt * (energy > pulse ? 18 : 6)));
+    bass += (low - bass) * (1 - Math.exp(-dt * 11));
+    travel += dt * (0.14 + pulse * 0.53 + attack * 0.28);
   }
 
-  function readTimeline(elapsed) {
+  function matchesKey(event, position, index) {
+    const pc = position.degree?.pitchClass;
+    if (pc === undefined) return event.degreeIndex === index;
+    return event.pitchClasses.includes(pc);
+  }
+
+  function readTimeline(elapsed, dt) {
+    active = active.filter(event => elapsed < event.endSec);
     while (eventIndex < events.length && events[eventIndex].timeSec <= elapsed) {
       const event = events[eventIndex++];
-      active.push(event);
+      if (elapsed < event.endSec) active.push(event);
+      if (event.continued || elapsed - event.timeSec > 0.22 || style === 'pure') continue;
+      const isChord = event.pitchClasses.length >= 3;
+      if (isChord) attack = Math.max(attack, 0.96);
+      if (style === 'keys') {
+        positions.forEach((position, index) => {
+          if (matchesKey(event, position, index)) position.struckAt = event.timeSec;
+        });
+      }
       if (style === 'cosmos') {
-        hue = ROOT_HUES[event.rootPc] ?? ROOT_HUES[0];
-        if (!event.continued) bursts.push({ ...event, hue, index: eventIndex });
+        if (bursts.length === 18) bursts.shift();
+        bursts.push(event);
       }
     }
-    active = active.filter(event => elapsed < event.endSec);
-    bursts = bursts.filter(event => elapsed - event.timeSec < 1.15);
-    return active.at(-1)?.label ?? '';
+    bursts = bursts.filter(event => elapsed - event.timeSec < 1.35);
+    chord = active.findLast(event => event.pitchClasses.length >= 3) ?? active.at(-1);
+    const nextLabel = chord?.label ?? '';
+    if (nextLabel !== label) {
+      previousLabel = label;
+      label = nextLabel;
+      labelAt = elapsed;
+      if (chord) {
+        flashRoot = chord.rootPc;
+        if (!chord.continued) flashAt = elapsed;
+      }
+    }
+    root = chord?.rootPc ?? root;
+    if (style === 'keys' || (style === 'cosmos' && video)) {
+      positions.forEach((position, index) => {
+        const sounding = active.some(event => matchesKey(event, position, index));
+        position.level = sounding ? Math.min(1, position.level + dt * 16)
+          : position.level * Math.exp(-dt * 7);
+      });
+    }
   }
 
   function drawTitle(lastBaseline) {
@@ -256,272 +455,407 @@ function makeFrameRenderer(ctx, video, analyser, sampleRate, meta) {
   }
 
   function drawBrand() {
-    panel(ctx, INSET, 51, 121, 40, 9, '#111419c7');
-    text(ctx, 'ÓRBITA', INSET + 60, 78, '800 19px monospace', '#f0f8f7');
+    panel(ctx, INSET, 51, 114, 35, 8, '#10121785');
+    text(ctx, 'ÓRBITA', INSET + 57, 75, '800 18px monospace', '#f0f8f7');
   }
 
-  function drawSpectrum(x, y, width, height, color) {
+  function drawSpectrum(x, y, width, height) {
     const step = width / bands.length;
-    ctx.fillStyle = color;
+    ctx.beginPath();
     for (let i = 0; i < bands.length; i++) {
-      const bar = 2 + bands[i] * height;
-      ctx.fillRect(x + i * step, y - bar, step * 0.52, bar);
+      const bar = 1 + bands[i] * height;
+      ctx.rect(x + i * step, y - bar, step * 0.53, bar);
     }
+    ctx.fillStyle = oled;
+    ctx.fill();
   }
 
-  function drawPure(label) {
+  function softLight(pc, x, y, width, height, opacity = 1) {
+    ctx.globalAlpha = opacity;
+    ctx.drawImage(sprites[pc].glow, x - width / 2, y - height / 2, width, height);
+  }
+
+  function lightBeam(pc, x, y, angle, length, width, opacity) {
+    ctx.save();
+    ctx.globalAlpha = opacity;
+    ctx.translate(x, y);
+    ctx.rotate(angle);
+    ctx.drawImage(sprites[pc].beam, -width / 2, -length, width, length);
+    ctx.restore();
+  }
+
+  function lensFlare(elapsed, y) {
+    const age = elapsed - flashAt;
+    if (age > 0.65) return;
+    const strength = (1 - age / 0.65) ** 2;
+    const x = CENTER_X + (flashRoot % 2 ? -1 : 1) * (age * 860 - 130);
+    softLight(flashRoot, x, y, 1130 + age * 520, 38, strength);
+    softLight((flashRoot + 4) % 12, FRAME_WIDTH - x, y + 17, 422, 12, strength * 0.75);
+    softLight(flashRoot, x, y, 332, 6, strength);
+    softLight(flashRoot, x, y, 81, 81, strength * 0.79);
+  }
+
+  function neonChord(y, size) {
+    if (!label) return;
+    const font = '800 ' + size + 'px system-ui, sans-serif';
+    const hue = ROOT_HUES[root];
+    ctx.save();
+    ctx.font = font;
+    ctx.textAlign = 'center';
+    ctx.strokeStyle = hueColor(hue, 22, 0.92);
+    ctx.lineWidth = 6;
+    ctx.lineJoin = 'round';
+    ctx.strokeText(label, CENTER_X, y, CONTENT_WIDTH);
+    text(ctx, label, CENTER_X, y, font, hueColor(hue, 94));
+    ctx.restore();
+  }
+
+  function drawPure(elapsed) {
     if (video) return;
-    drawTitle(495);
-    text(ctx, label, CENTER_X, 570, '500 32px monospace', '#a4baaf');
+    drawTitle(498);
+    const age = elapsed - labelAt;
+    ctx.globalAlpha = Math.max(0, 1 - age / 0.10);
+    text(ctx, previousLabel, CENTER_X, 582, '500 40px monospace', '#d4e4df');
+    ctx.globalAlpha = Math.min(1, Math.max(0, (age - 0.06) / 0.18));
+    text(ctx, label, CENTER_X, 582, '500 40px monospace', '#d4e4df');
+    ctx.globalAlpha = 1;
     ctx.beginPath();
-    for (let i = 0; i <= 256; i++) {
-      const x = INSET + CONTENT_WIDTH * i / 256;
-      const sample = waveform[Math.round((waveform.length - 1) * i / 256)];
-      const y = 671 + sample * 58 * Math.sin(Math.PI * i / 256);
+    for (let i = 0; i <= 220; i++) {
+      const x = INSET + CONTENT_WIDTH * i / 220;
+      const sample = waveform[Math.round((waveform.length - 1) * i / 220)];
+      const y = 672 + sample * 72 * Math.sin(Math.PI * i / 220);
       if (i === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
     }
-    ctx.strokeStyle = '#78c6ab';
-    ctx.lineWidth = 1.8;
+    ctx.strokeStyle = '#87c9b1';
+    ctx.lineWidth = 1.6;
     ctx.stroke();
   }
 
-  function drawKeys(label) {
-    const y = video ? 842 : 601;
-    if (!video) drawTitle(493);
-    else drawTitle(y - 28);
-    panel(ctx, INSET, y, CONTENT_WIDTH, 355, 23, CHASSIS, '#536067');
-    panel(ctx, INSET + 18, y + 18, CONTENT_WIDTH - 36, 109, 10, '#071410', '#2c5445');
-    text(ctx, label, INSET + 42, y + 86, TITLE_FONT, EMERALD, 'left', 236);
-    drawSpectrum(347, y + 105, 268, 64, oled);
-
-    const sounding = new Set(active.flatMap(event => event.pitchClasses));
-    const activeDegrees = new Set(active.map(event => event.degreeIndex));
-    KEY_ROWS.forEach((row, rowIndex) => row.forEach((index, column) => {
-      const degree = keyboardDegrees[index];
-      const lit = activeDegrees.has(index) || sounding.has(degree?.pitchClass);
-      const x = INSET + 26 + column * 146 + (rowIndex === 0 ? 73 : 0);
-      const top = y + 145 + rowIndex * 101;
-      const color = sounding.has(degree?.pitchClass) ? EMERALD : AMBER;
-      if (lit) {
-        ctx.shadowColor = color;
-        ctx.shadowBlur = 16;
-      }
-      panel(ctx, x, top, 134, 82, 11, lit ? '#123b2b' : '#1b1d22', lit ? color : '#42464d');
-      ctx.shadowBlur = 0;
-      panel(ctx, x + 49, top + 10, 35, 3, 2, lit ? color : '#494c50');
-      text(ctx, degree?.chordLabel ?? '', x + 67, top + 57, MONO_FONT, lit ? color : '#c3c8cd');
-    }));
+  function drawKeyboard(top, height, rowSpacing) {
+    for (const position of positions) {
+      const { x, upper, degree, level } = position;
+      const y = top + (upper ? 0 : rowSpacing);
+      const hue = ROOT_HUES[degree?.pitchClass ?? root];
+      panel(ctx, x - 65, y, 130, height, 11, hueColor(hue, 12 + level * 17, 0.73),
+        hueColor(hue, 53 + level * 34, 0.40 + level * 0.58));
+      panel(ctx, x - 19, y + 7, 38, 2.5, 1, hueColor(hue, 47 + level * 48, 0.4 + level * 0.6));
+      text(ctx, degree?.chordLabel, x, y + height * 0.68, MONO_FONT, hueColor(hue, 76 + level * 18));
+    }
   }
 
-  function drawOrbit(label) {
-    const cy = video ? 898 : 699;
-    const radius = video ? 196 : 245;
-    if (!video) drawTitle(315);
-    else text(ctx, titleLines.join(' '), CENTER_X, 1212, '700 32px system-ui, sans-serif', '#f0f8f7');
-    const halo = ctx.createRadialGradient(CENTER_X, cy, 32, CENTER_X, cy, radius + 95);
-    halo.addColorStop(0, video ? '#07100e92' : '#102822');
-    halo.addColorStop(0.68, '#226c4b31');
-    halo.addColorStop(0.84, '#cc7a182c');
-    halo.addColorStop(1, '#14151800');
-    ctx.fillStyle = halo;
-    ctx.fillRect(CENTER_X - radius - 95, cy - radius - 95, (radius + 95) * 2, (radius + 95) * 2);
+  function drawKeyLights(elapsed, top, rowSpacing) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'screen';
+    for (const { x, upper, degree, level, struckAt } of positions) {
+      const age = elapsed - struckAt;
+      const kick = Math.max(0, 1 - age / 0.75) ** 2;
+      if (level + kick < 0.025) continue;
+      const pc = degree?.pitchClass ?? root;
+      const y = top + 2 + (upper ? 0 : rowSpacing);
+      const angle = (x - CENTER_X) / 790 + Math.sin(elapsed * 2 + x) * 0.076;
+      lightBeam(pc, x, y, angle, 420 + level * 135 + pulse * 380, 92 + kick * 91,
+        Math.min(1, level * 0.67 + kick * 0.56));
+      softLight(pc, x, y, 139 + kick * 63, 96 + kick * 42, Math.min(1, level * 0.75 + kick));
+      for (let i = 0; i < 9; i++) {
+        const t = age - i * 0.037;
+        if (t < 0 || t >= 0.8) continue;
+        const rise = t * (140 + i * 39) + t * t * 85;
+        const px = x + Math.sin(angle) * rise + Math.sin(i * 5.17) * t * 92;
+        const py = y - rise;
+        const size = 8 + i % 4 * 4;
+        softLight(pc, px, py, size, size * 1.85, 0.85 * (1 - t / 0.8));
+      }
+    }
+    ctx.restore();
+  }
 
-    for (let ring = 1; ring <= 5; ring++) {
-      circle(ctx, CENTER_X, cy, radius * ring / 5);
-      ctx.strokeStyle = ring % 2 === 0 ? '#fbbf2466' : '#34d39971';
-      ctx.lineWidth = ring === 5 ? 1.8 : 1;
+  function drawStage(elapsed) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'screen';
+    softLight(root, CENTER_X, 1040, 1020, video ? 450 : 760, 0.26 + pulse * 0.32);
+    if (!video) {
+      softLight((root + 3) % 12, 124, 670, 610, 940, 0.32);
+      softLight((root + 7) % 12, 635, 555, 630, 1020, 0.27);
+    }
+    ctx.restore();
+    drawKeyLights(elapsed, 1040, 96);
+    drawTitle(video ? 179 : 402);
+    neonChord(961, 98);
+    drawSpectrum(INSET + 34, 1018, CONTENT_WIDTH - 68, 31);
+    drawKeyboard(1040, 81, 96);
+  }
+
+  function drawBokeh(elapsed) {
+    for (let i = 0; i < 17; i++) {
+      const phase = (i / 17 + elapsed * (0.026 + i % 4 * 0.011)) % 1;
+      const x = (i * 151 % 810) - 45 + 61 * Math.sin(i + elapsed * 0.41);
+      const y = FRAME_HEIGHT + 125 - phase * (FRAME_HEIGHT + 250);
+      const size = 52 + (i * 73 % 156) + bass * 39;
+      ctx.globalAlpha = (0.38 + pulse * 0.40) * Math.sin(phase * Math.PI);
+      ctx.drawImage(sprites[(i * 5 + root) % 12].bokeh, x - size / 2, y - size / 2, size, size);
+    }
+  }
+
+  function drawHorizon(elapsed) {
+    const y = 681;
+    softLight((root + 4) % 12, CENTER_X, y, 1040, 540, 0.69);
+    ctx.globalAlpha = 1;
+    ctx.beginPath();
+    for (let i = -7; i <= 7; i++) {
+      ctx.moveTo(CENTER_X + i * 10, y);
+      ctx.lineTo(CENTER_X + i * 189, FRAME_HEIGHT);
+    }
+    for (let i = 0; i <= 12; i++) {
+      const yy = y + ((i + travel * 2 % 1) / 12) ** 2 * (FRAME_HEIGHT - y);
+      ctx.moveTo(0, yy);
+      ctx.lineTo(FRAME_WIDTH, yy);
+    }
+    ctx.strokeStyle = hueColor(ROOT_HUES[root] + 61, 64, 0.32 + pulse * 0.26);
+    ctx.lineWidth = 1.25;
+    ctx.stroke();
+    ctx.beginPath();
+    for (let i = 0; i <= BAR_COUNT * 2; i++) {
+      const value = bands[Math.min(i, BAR_COUNT * 2 - i, BAR_COUNT - 1)];
+      const x = i * FRAME_WIDTH / (BAR_COUNT * 2);
+      const yy = y - value * (32 + pulse * 112);
+      if (i === 0) ctx.moveTo(x, yy);
+      else ctx.lineTo(x, yy);
+    }
+    ctx.strokeStyle = oled;
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+    for (let i = 0; i < 5; i++) {
+      const x = 26 + i * 167;
+      const angle = Math.PI + Math.sin(elapsed * 0.87 + i * 1.8) * 0.61;
+      lightBeam((root + i * 3) % 12, x, -37, angle, 1010, 240, 0.57 + bass * 0.32);
+    }
+  }
+
+  function drawConstellation(elapsed) {
+    const cy = video ? 914 : 823;
+    const radius = video ? 152 : 186;
+    const pitchClasses = chord?.pitchClasses ?? [];
+    const spin = 0.15 * Math.sin(elapsed * 0.55);
+    softLight(root, CENTER_X, cy, 486, 441, video ? 0.24 : 0.51);
+    ctx.globalAlpha = 1;
+    for (const r of [radius - 12, radius, radius + 12]) {
+      circle(ctx, CENTER_X, cy, r);
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = hueColor(ROOT_HUES[root], 63, r === radius ? 0.66 : 0.22);
       ctx.stroke();
     }
-
-    for (const event of active) {
-      if (event.pitchClasses.length < 2) continue;
+    if (pitchClasses.length >= 2) {
       ctx.beginPath();
-      event.pitchClasses.forEach((pc, i) => {
-        const [x, y] = pointOnRing(pitchAngle(pc), radius, cy);
+      [...pitchClasses].sort((a, b) => a - b).forEach((pc, i) => {
+        const [x, y] = pointOnRing(pitchAngle(pc) + spin, radius, cy);
         if (i === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
       });
-      if (event.pitchClasses.length > 2) ctx.closePath();
-      ctx.strokeStyle = '#a1ffcf';
+      if (pitchClasses.length > 2) ctx.closePath();
+      ctx.strokeStyle = hueColor(ROOT_HUES[root], 53, 0.33);
+      ctx.lineWidth = 12 + attack * 20;
+      ctx.stroke();
+      ctx.strokeStyle = hueColor(ROOT_HUES[root], 90, 0.96);
       ctx.lineWidth = 2.5 + pulse * 2;
-      ctx.shadowColor = EMERALD;
-      ctx.shadowBlur = 15;
       ctx.stroke();
     }
-    ctx.shadowBlur = 0;
-
-    const sounding = new Set(active.flatMap(event => event.pitchClasses));
-    chromaticLabels.forEach((name, pc) => {
-      const angle = pitchAngle(pc);
+    pitchLabels.forEach((name, pc) => {
+      const angle = pitchAngle(pc) + spin;
       const [x, y] = pointOnRing(angle, radius, cy);
-      const [lx, ly] = pointOnRing(angle, radius + 29, cy);
-      const lit = sounding.has(pc);
-      circle(ctx, x, y, lit ? 8 + pulse * 7 : 3.5);
-      ctx.fillStyle = lit ? (pc === active.at(-1)?.rootPc ? AMBER : EMERALD) : '#548777';
-      ctx.shadowColor = ctx.fillStyle;
-      ctx.shadowBlur = lit ? 23 : 0;
+      const [lx, ly] = pointOnRing(angle, radius + 28, cy);
+      const lit = pitchClasses.includes(pc);
+      if (lit) softLight(pc, x, y, 62 + attack * 30, 62 + attack * 30);
+      ctx.globalAlpha = 1;
+      circle(ctx, x, y, lit ? 4 : 2);
+      ctx.fillStyle = lit ? '#fff' : '#d0e4f5a0';
       ctx.fill();
-      ctx.shadowBlur = 0;
-      text(ctx, name, lx, ly + 7, '600 20px monospace', lit ? '#ffffff' : '#baccc5');
+      text(ctx, name, lx, ly + 6, '600 18px monospace', lit ? '#fff' : '#c2d9ee');
     });
+  }
 
-    ctx.strokeStyle = oled;
-    ctx.lineWidth = 2.3;
-    ctx.beginPath();
-    bands.forEach((value, i) => {
-      const angle = Math.PI * (0.16 + 0.68 * i / (bands.length - 1));
-      const [x1, y1] = pointOnRing(angle, radius + 56, cy);
-      const [x2, y2] = pointOnRing(angle, radius + 58 + value * 35, cy);
-      ctx.moveTo(x1, y1);
-      ctx.lineTo(x2, y2);
-    });
-    ctx.stroke();
-    panel(ctx, CENTER_X - 116, cy - 34, 232, 68, 10, '#071410e5', '#447362');
-    text(ctx, label, CENTER_X, cy + 17, '800 48px monospace', '#d6fff3', 'center', 209);
+  function drawClub(elapsed) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'screen';
+    if (!video) drawHorizon(elapsed);
+    drawBokeh(elapsed);
+    lensFlare(elapsed, video ? 711 : 660);
+    drawConstellation(elapsed);
+    ctx.restore();
+    drawTitle(video ? 179 : 312);
+    neonChord(video ? 1154 : 1115, 66);
   }
 
   function drawTunnel(elapsed, cy) {
-    const centerGlow = ctx.createRadialGradient(CENTER_X, cy, 0, CENTER_X, cy, 690);
-    centerGlow.addColorStop(0, hueColor(hue, 26, 0.8));
-    centerGlow.addColorStop(0.6, hueColor(hue + 80, 12, 0.64));
-    centerGlow.addColorStop(1, '#070711');
-    ctx.fillStyle = centerGlow;
-    ctx.fillRect(0, 0, FRAME_WIDTH, FRAME_HEIGHT);
-    for (const star of stars) {
-      const depth = (star.depth + elapsed * star.speed) % 1;
-      const angle = star.angle + elapsed * 0.18;
-      const r = depth ** 2 * 850;
-      const [x, y] = pointOnRing(angle, r, cy);
-      const length = 4 + depth * (10 + pulse * 37);
-      ctx.strokeStyle = hueColor(hue + star.angle * 8, 75, depth * 0.7);
-      ctx.lineWidth = 1 + depth * 2;
+    softLight(root, CENTER_X, cy, 1180, 1060, 0.34 + pulse * 0.23);
+    softLight((root + 5) % 12, CENTER_X, cy, 561, 581, 0.30 + attack * 0.21);
+    ctx.globalAlpha = 1;
+    for (let i = 0; i < 13; i++) {
+      const z = (i / 13 + travel) % 1;
+      const radius = 16 + z ** 2.55 * 1050;
       ctx.beginPath();
-      ctx.moveTo(x, y);
-      ctx.lineTo(x - Math.cos(angle) * length, y - Math.sin(angle) * length);
+      ctx.ellipse(CENTER_X, cy + z ** 3 * 83, radius, radius * 0.66, -elapsed * 0.20 + z * 0.8, 0, TAU);
+      ctx.strokeStyle = hueColor(ROOT_HUES[root] + i * 13, 70, (0.25 + pulse * 0.43) * Math.sin(z * Math.PI));
+      ctx.lineWidth = 1 + z * 4;
+      ctx.stroke();
+    }
+    for (let lane = 0; lane < 4; lane++) {
+      ctx.beginPath();
+      for (let i = lane; i < stars.length; i += 4) {
+        const star = stars[i];
+        const z = (star.depth + travel * star.speed) % 1;
+        const angle = star.angle + elapsed * 0.17;
+        const distance = z ** 2 * 920;
+        const [x, y] = pointOnRing(angle, distance, cy);
+        const tail = z * (13 + pulse * 89 + attack * 58);
+        ctx.moveTo(x, y);
+        ctx.lineTo(x - Math.cos(angle) * tail, y - Math.sin(angle) * tail);
+      }
+      ctx.lineWidth = 1.1 + lane * 0.48;
+      ctx.strokeStyle = hueColor(ROOT_HUES[root] + lane * 43, 77, 0.51 + pulse * 0.22);
       ctx.stroke();
     }
   }
 
   function drawMandala(elapsed, cy) {
-    for (let ring = 0; ring < 4; ring++) {
-      const spin = elapsed * (ring % 2 === 0 ? 0.26 : -0.21) + ring * 0.31;
-      ctx.strokeStyle = hueColor(hue + ring * 43, 66, 0.25 + pulse * 0.42);
-      ctx.lineWidth = 1.5 + pulse * 2;
+    const petals = PETALS_BY_ROOT[root];
+    for (let layer = 0; layer < 4; layer++) {
+      const spin = elapsed * (layer % 2 === 0 ? 0.24 : -0.29) + layer * 0.31;
+      const reach = 106 + layer * 34 + pulse * 53;
+      const hue = ROOT_HUES[root] + layer * 37;
       ctx.beginPath();
-      for (let i = 0; i <= 72; i++) {
-        const angle = i / 72 * TAU;
-        const radius = 54 + ring * 68 + (35 + pulse * 53) * Math.cos(12 * angle);
+      for (let i = 0; i <= 144; i++) {
+        const angle = i / 144 * TAU;
+        const radius = reach * (0.71 + 0.29 * Math.cos(petals * angle));
         const [x, y] = pointOnRing(angle + spin, radius, cy);
         if (i === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
       }
+      ctx.closePath();
+      ctx.fillStyle = hueColor(hue, 52, 0.035 + pulse * 0.05);
+      ctx.fill();
+      ctx.strokeStyle = hueColor(hue, 64, 0.21);
+      ctx.lineWidth = 9 + attack * 9;
       ctx.stroke();
+      ctx.strokeStyle = hueColor(hue, 82, 0.58 + pulse * 0.29);
+      ctx.lineWidth = 1.6 + layer * 0.28;
+      ctx.stroke();
+    }
+  }
+
+  function drawStarRain(elapsed) {
+    for (let i = 0; i < 48; i++) {
+      const star = stars[i];
+      const phase = (star.depth + elapsed * 0.45 + travel * 0.17 * star.speed) % 1;
+      const x = (i * 131 % 792) - 36 + phase * Math.sin(star.angle) * 79;
+      const y = -95 + phase ** 1.6 * 1460;
+      const size = 10 + i % 6 * 4;
+      softLight((root + i * 5) % 12, x, y, size, size * (1.3 + phase * 2.3), Math.sin(phase * Math.PI) * 0.75);
     }
   }
 
   function drawBurst(event, elapsed, cy) {
     const age = elapsed - event.timeSec;
-    const velocity = Math.max(0.2, Math.min(1, event.velocity));
-    const fade = 1 - age / 1.15;
-    const [originX, originY] = video
-      ? [event.rootPc % 2 ? FRAME_WIDTH - 46 : 46, 530 + (event.rootPc % 6) * 85]
-      : pointOnRing(pitchAngle(event.rootPc), 105, cy);
-    const radius = 12 + age * (215 + pulse * 120);
-    ctx.lineWidth = 2 + 6 * fade * velocity;
-    for (let ring = 0; ring < 3; ring++) {
-      circle(ctx, originX, originY, radius * (1 + ring * 0.32));
-      ctx.strokeStyle = hueColor(event.hue + ring * 34, 65, fade * velocity * 0.71 / (ring + 1));
+    const fade = Math.max(0, 1 - age / 1.35);
+    const pc = event.rootPc;
+    const hue = ROOT_HUES[pc];
+    const velocity = Math.min(1, Math.max(0.25, event.velocity ?? 0.8));
+    const isChord = event.pitchClasses.length >= 3;
+    if (isChord) {
+      const wave = age * (310 + velocity * 155);
+      ctx.globalAlpha = 1;
+      for (let ring = 0; ring < 3; ring++) {
+        circle(ctx, CENTER_X, cy, 25 + wave * (0.86 + ring * 0.21));
+        ctx.lineWidth = 1.3 + fade * (5 - ring);
+        ctx.strokeStyle = hueColor(hue + ring * 31, 80, fade ** 2 * (0.53 - ring * 0.11));
+        ctx.stroke();
+      }
+    }
+    const [x, y] = pointOnRing(pitchAngle(pc), video ? 226 : 113, cy);
+    softLight(pc, x, y, 130, 118, fade ** 3 * velocity);
+    ctx.globalAlpha = 1;
+    for (const note of event.pitchClasses) {
+      const [noteX, noteY] = pointOnRing(pitchAngle(note), video ? 226 : 113, cy);
+      const count = note === pc ? 8 : 4;
+      ctx.beginPath();
+      for (let i = 0; i < count; i++) {
+        const angle = pitchAngle(note) + i * 2.399963 + event.timeSec;
+        const speed = (64 + i * 71 % 213) * (0.68 + velocity * 0.62);
+        const vx = Math.cos(angle) * speed;
+        const vy = Math.sin(angle) * speed - 99;
+        const t = Math.max(0, age - 0.075 - i % 4 * 0.02);
+        ctx.moveTo(noteX + vx * t, noteY + vy * t + 117 * t * t);
+        ctx.lineTo(noteX + vx * age, noteY + vy * age + 117 * age * age);
+      }
+      ctx.lineWidth = 1.1 + velocity * 1.7;
+      ctx.strokeStyle = hueColor(ROOT_HUES[note] + 19, 80, fade * velocity);
       ctx.stroke();
     }
-
-    ctx.beginPath();
-    const rayLength = 36 + pulse * 82 + velocity * 45;
-    for (let ray = 0; ray < 12; ray++) {
-      const angle = pitchAngle(event.rootPc) + ray * TAU / 12 + age * 0.35;
-      const reach = radius * 0.68;
-      const length = reach + rayLength * fade * (ray % 2 === 0 ? 1 : 0.44);
-      const dx = Math.cos(angle);
-      const dy = Math.sin(angle);
-      ctx.moveTo(originX + dx * reach, originY + dy * reach);
-      ctx.lineTo(originX + dx * length, originY + dy * length);
-    }
-    ctx.strokeStyle = hueColor(event.hue + 42, 74, fade * velocity * 0.65);
-    ctx.lineWidth = 2 + velocity * 2;
-    ctx.stroke();
-
-    for (let i = 0; i < 24; i++) {
-      const angle = (i / 24 + event.index * 0.381966) * TAU;
-      const speed = 70 + (i * 71 % 185);
-      const travel = age * speed * (0.8 + velocity + pulse * 0.3);
-      const x = originX + Math.cos(angle) * travel;
-      const y = originY + Math.sin(angle) * travel - 22 * age;
-      ctx.fillStyle = hueColor(event.hue + (i % 3) * 44, 72, fade);
-      const size = (2 + i % 4) * fade;
-      if (i % 4 === 0) {
-        ctx.fillRect(x - size * 2, y - 1, size * 4, 2);
-        ctx.fillRect(x - 1, y - size * 2, 2, size * 4);
-      } else {
-        circle(ctx, x, y, size);
-        ctx.fill();
-      }
+    if (video && isChord) {
+      ctx.globalAlpha = Math.min(1, age * 14, fade * 2) * 0.9;
+      const lx = Math.max(103, Math.min(FRAME_WIDTH - 103, x + 63 * Math.sin(age * 3 + pc)));
+      text(ctx, event.label, lx, y - 37 - age * 167, '800 36px monospace', hueColor(hue, 89), 195);
     }
   }
 
-  function drawCosmos(label, elapsed) {
-    const cy = video ? 755 : 650;
-    if (!video) drawTunnel(elapsed, cy);
+  function drawMusicVideo(elapsed) {
+    const cy = video ? 630 : 664;
     ctx.save();
     ctx.globalCompositeOperation = 'screen';
     if (video) {
-      const aura = ctx.createRadialGradient(CENTER_X, 620, 270, CENTER_X, 620, 690);
-      aura.addColorStop(0, hueColor(hue, 60, 0));
-      aura.addColorStop(0.78, hueColor(hue, 57, 0.36 + pulse * 0.30));
-      aura.addColorStop(1, hueColor(hue + 72, 66, 0.59 + pulse * 0.36));
-      ctx.strokeStyle = aura;
-      ctx.lineWidth = 9 + pulse * 21;
-      ctx.strokeRect(7, 7, FRAME_WIDTH - 14, FRAME_HEIGHT - 14);
+      drawStarRain(elapsed);
     } else {
+      drawTunnel(elapsed, cy);
       drawMandala(elapsed, cy);
     }
+    lensFlare(elapsed, cy - 87);
     bursts.forEach(event => drawBurst(event, elapsed, cy));
     ctx.restore();
-
-    ctx.shadowColor = hueColor(hue, 58);
-    ctx.shadowBlur = 20 + 28 * pulse;
-    text(ctx, label, CENTER_X, video ? 1005 : 722, '900 103px system-ui, sans-serif', '#f8f4ff');
-    ctx.shadowBlur = 0;
-    drawTitle(video ? 1091 : 294);
-    drawSpectrum(INSET, 1200, CONTENT_WIDTH, 140, hueColor(hue + 26, 67));
+    if (video) {
+      drawTitle(179);
+      neonChord(984, 76);
+      drawSpectrum(INSET + 31, 1049, CONTENT_WIDTH - 62, 43);
+      drawKeyboard(1074, 66, 74);
+    } else {
+      drawTitle(331);
+      neonChord(1011, 96);
+      drawSpectrum(INSET, 1193, CONTENT_WIDTH, 128);
+    }
   }
 
   return (elapsed, progress) => {
-    let label = '';
     if (!(video && style === 'pure')) {
-      readAudio();
-      label = readTimeline(elapsed);
+      const dt = Math.min(0.12, Math.max(1 / FRAME_RATE, elapsed - lastElapsed));
+      readAudio(dt);
+      readTimeline(elapsed, dt);
+      lastElapsed = elapsed;
     }
     if (video) {
-      drawCameraCover(ctx, video, style === 'cosmos' ? 1 + pulse * 0.023 : 1);
+      const impact = Math.min(1, attack + bass * 0.15);
+      const zoom = style === 'orbit' ? 1 + 0.055 * impact : 1;
+      drawCameraCover(ctx, video, zoom);
+      cameraEffects?.(zoom, ROOT_HUES[root], impact, elapsed);
+      ctx.fillStyle = vignette;
+      ctx.fillRect(0, 0, FRAME_WIDTH, FRAME_HEIGHT);
       if (style !== 'pure') {
-        ctx.fillStyle = shade;
-        ctx.fillRect(0, 590, FRAME_WIDTH, FRAME_HEIGHT - 590);
+        ctx.fillStyle = lowerShade;
+        ctx.fillRect(0, 665, FRAME_WIDTH, FRAME_HEIGHT - 665);
       }
     } else {
-      ctx.fillStyle = style === 'keys' ? metal : CHASSIS;
+      ctx.fillStyle = CHASSIS;
       ctx.fillRect(0, 0, FRAME_WIDTH, FRAME_HEIGHT);
     }
 
-    if (style === 'keys') drawKeys(label);
-    else if (style === 'orbit') drawOrbit(label);
-    else if (style === 'cosmos') drawCosmos(label, elapsed);
-    else drawPure(label);
+    if (style === 'keys') drawStage(elapsed);
+    else if (style === 'orbit') drawClub(elapsed);
+    else if (style === 'cosmos') drawMusicVideo(elapsed);
+    else drawPure(elapsed);
 
     drawBrand();
     ctx.fillStyle = '#d7eee347';
-    ctx.fillRect(INSET, 1230, CONTENT_WIDTH, 2);
-    ctx.fillStyle = style === 'cosmos' ? hueColor(hue, 65) : EMERALD;
-    ctx.fillRect(INSET, 1230, CONTENT_WIDTH * progress, 2);
+    ctx.fillRect(INSET, 1243, CONTENT_WIDTH, 2);
+    ctx.fillStyle = style === 'pure' ? EMERALD : oled;
+    ctx.fillRect(INSET, 1243, CONTENT_WIDTH * progress, 2);
   };
 }
 
@@ -566,19 +900,7 @@ export async function encodeShortVideo(mix, cameraBlob, onProgress, signal, meta
       video.playsInline = true;
       video.preload = 'auto';
       try {
-        const ready = waitForVideo(video, 'loadeddata', signal);
-        video.src = cameraUrl;
-        await ready;
-        if (trimStart > 0) {
-          const end = Number.isFinite(video.duration) ? Math.max(0, video.duration - 0.01) : trimStart;
-          const offset = Math.min(trimStart, end);
-          if (offset > 0) {
-            const seek = waitForVideo(video, 'seeked', signal);
-            video.currentTime = offset;
-            await seek;
-          }
-        }
-        await video.play();
+        await loadCamera(video, cameraUrl, trimStart, signal);
         cameraReady = Boolean(video.videoWidth && video.videoHeight);
       } catch (_) {
         signal.throwIfAborted();
@@ -586,7 +908,17 @@ export async function encodeShortVideo(mix, cameraBlob, onProgress, signal, meta
     }
 
     signal.throwIfAborted();
-    const drawFrame = makeFrameRenderer(ctx, cameraReady ? video : null, analyser, audioContext.sampleRate, meta);
+    let drawFrame = makeFrameRenderer(ctx, cameraReady ? video : null, analyser, audioContext.sampleRate, meta);
+    if (cameraReady) {
+      try {
+        await video.play();
+      } catch (_) {
+        signal.throwIfAborted();
+        cameraReady = false;
+        drawFrame = makeFrameRenderer(ctx, null, analyser, audioContext.sampleRate, meta);
+      }
+    }
+    signal.throwIfAborted();
     drawFrame(0, 0);
     output = canvas.captureStream(FRAME_RATE);
     output.addTrack(audioDestination.stream.getAudioTracks()[0]);

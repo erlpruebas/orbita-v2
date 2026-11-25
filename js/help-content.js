@@ -28,7 +28,7 @@ export const HELP_CONTENT = {
       title: 'Banco 50 → 9, ritmo y progresiones',
       topics: [
         ['Banco y pantalla OLED', 'Guarda hasta nueve favoritos de cada banco de 50 sonidos, acompañamientos y baterías. Pulsa una de sus tres casillas OLED para abrir el banco correspondiente.'],
-        ['Ritmo y tempo', 'El acompañamiento 0 es Manual. Los patrones 1–9 siguen el grado que tocas. Activa la batería con ▶ y marca el tempo con toques seguidos sobre BPM. El LED cian indica que el metrónomo está habilitado para el transporte o la precuenta.'],
+        ['Ritmo y tempo', 'El acompañamiento 0 es Manual. Los patrones 1–9 siguen el grado que tocas. Activa la batería con ▶ y marca el tempo con toques seguidos sobre BPM. Si cambias el BPM en marcha, el reloj respeta los golpes programados y aplica el nuevo tempo a partir del siguiente paso. El LED cian indica que el metrónomo está habilitado para el transporte o la precuenta.'],
         ['Progresiones en voz independiente', 'Junto a II, ▲ y ▼ recorren 16 secuencias. ▶ arranca la elegida o la primera desde 0. La cuarta casilla OLED muestra su nombre y el teclado ilumina el grado activo. Los acordes de la progresión suenan en octava 0 con o sin patrón de acompañamiento y batería. Cambia a Melodía y elige una octava de −2 a +2 para tocar notas encima.']
       ]
     },
@@ -51,7 +51,7 @@ export const HELP_CONTENT = {
         ['Medidor y fader MASTER', 'MASTER ajusta de 0 a 200 % la suma de música, voz y base. Antes de COMP, la barra LED muestra el nivel RMS (volumen medio) y el palito brillante y la cifra muestran el pico instantáneo. La raya de 0 dB separa el ámbar del rojo. Si el pico la supera, se enciende CLIP. Otra marca retiene el pico durante 900 ms. Pulsa CLIP para reiniciar el testigo y la marca.'],
         ['Compresión MASTER', 'Pulsa COMP para recorrer los 4 niveles, de 0 a 3 LEDs. Con 0 LEDs la mezcla pasa en línea recta y puede recortar al exportar si supera 0 dB. Con 1 LED (por defecto) la compresión es suave, con 2 es firme y con 3 se activa el limitador con saturación suave. El ajuste se aplica a la preescucha, el MP3 y el vídeo corto.'],
         ['Saltar en la onda', 'Toca o haz clic en la onda para escuchar desde ese punto. Arrastra el cabezal blanco y suelta para saltar a otra posición dentro del recorte. La etiqueta del cabezal muestra el tiempo.'],
-          ['Editar y exportar', 'Recorta inicio y final, ajusta los niveles de las pistas y compensa el desfase de la voz con SINCRO. El eco usa LED cian y el chorus, violetas. Escucha la mezcla y expórtala o compártela como MP3.']
+          ['Editar y exportar', 'Recorta inicio y final y ajusta el nivel de las pistas. Si necesitas afinar el desfase, por ejemplo con auriculares Bluetooth, abre Ajuste fino SINCRO y usa −10, +10, el deslizador o AUTO. El eco usa LED cian y el chorus, violetas. Escucha la mezcla y expórtala o compártela como MP3.']
       ]
     },
     {
@@ -59,7 +59,7 @@ export const HELP_CONTENT = {
       topics: [
         ['Captura frontal', 'Activa Cámara frontal en CONFIG antes de grabar y concede el permiso al iniciar la maqueta. El botón ✕ minimiza la vista en espejo y la grabación continúa.'],
         ['Vídeo vertical HD', 'Ajusta el recorte y la mezcla, elige un estilo y añade un título si quieres. Pulsa Generar vídeo corto para crear un vídeo de 720 × 1280 (9:16). Al terminar puedes previsualizarlo, descargarlo o compartirlo.'],
-        ['Cuatro estilos de vídeo', 'Puro muestra la cámara en espejo con un distintivo discreto, o una onda OLED con el título y la nota actual si grabas sin cámara. Teclado ilumina las siete teclas y muestra los acordes, Órbita conecta las notas en una constelación de doce posiciones y Cosmos dispara ondas y partículas neón con cada ataque. Los estilos reactivos siguen las notas reales del teclado, el acompañamiento, las progresiones y el looper. Los cuatro funcionan con o sin cámara frontal.']
+        ['Cuatro estilos de vídeo', 'Puro muestra la cámara en espejo con una viñeta sutil o una portada minimalista con título, acorde y onda. Escenario proyecta haces y chispas desde las teclas que suenan. Club combina constelaciones, destellos y bokeh con zoom rítmico y RGB sobre la cámara o focos y un horizonte sintetizado al grabar sin ella. Videoclip aplica prismas y duotono a tu imagen o crea un túnel estelar con un mandala animado. Los efectos siguen la energía de la mezcla y las notas reales del teclado, el acompañamiento, las progresiones y el looper.']
       ]
     }
   ],
@@ -91,7 +91,7 @@ export const HELP_CONTENT = {
       title: '50 → 9 bank, rhythm and progressions',
       topics: [
         ['Bank and OLED display', 'Save up to nine favorites each from the 50 sounds, accompaniments and drum patterns. Press one of their three OLED labels to open its bank.'],
-        ['Rhythm and tempo', 'Accompaniment 0 is Manual. Patterns 1–9 follow the degree you play. Start the drums with ▶ and tap BPM repeatedly to set the tempo. The cyan LED indicates that the metronome is enabled for transport or count-in.'],
+        ['Rhythm and tempo', 'Accompaniment 0 is Manual. Patterns 1–9 follow the degree you play. Start the drums with ▶ and tap BPM repeatedly to set the tempo. If you change BPM during playback, scheduled hits keep their timing and the new tempo starts with the next step. The cyan LED indicates that the metronome is enabled for transport or count-in.'],
         ['Independent progression voice', 'Beside II, ▲ and ▼ cycle through 16 sequences. ▶ plays the selected progression or starts the first one from 0. The fourth OLED cell shows its name and the keyboard lights up the current degree. The progression chords play at octave 0 with or without an accompaniment pattern and drums. Switch to Melody and choose any octave from −2 to +2 to play notes over it.']
       ]
     },
@@ -114,7 +114,7 @@ export const HELP_CONTENT = {
         ['MASTER meter and fader', 'MASTER sets the combined level of music, vocals and backing from 0 to 200%. Before COMP, the LED bar shows the RMS (average level), and the bright line and readout show the instant peak. The 0 dB line separates amber from red. CLIP lights up when the peak crosses it. A second marker holds the peak for 900 ms. Press CLIP to reset the indicator and marker.'],
         ['MASTER compression', 'Press COMP to cycle through four levels, from 0 to 3 LEDs. At 0 LEDs the mix passes through and can clip on export above 0 dB. One LED (the default) applies gentle compression, two apply firm compression and three add limiting with soft clipping. The setting applies to live preview, MP3 and short video.'],
         ['Seek on the waveform', 'Tap or click the waveform to play from that point. Drag the white playhead and release to jump to another position within the trim. The playhead label shows the time.'],
-          ['Edit and export', 'Trim the start and end, set the track levels and use SYNC to align the vocals. Echo uses cyan LEDs and chorus uses violet. Preview the mix and export or share it as an MP3.']
+          ['Edit and export', 'Trim the start and end and set the track levels. To fine-tune the offset, for example with Bluetooth headphones, open Fine SYNC and use −10, +10, the slider or AUTO. Echo uses cyan LEDs and chorus uses violet. Preview the mix and export or share it as an MP3.']
       ]
     },
     {
@@ -122,7 +122,7 @@ export const HELP_CONTENT = {
       topics: [
         ['Front camera capture', 'Enable Front Camera in SETTINGS and grant camera access when you start recording. Press ✕ to minimize the mirrored preview while recording continues.'],
         ['Vertical HD video', 'Adjust the trim and mix, choose a style and add a title if you like. Press Make short video to create a 720 × 1280 (9:16) video. You can preview, download or share it when it is ready.'],
-        ['Four video styles', 'Pure shows mirrored camera footage with a discreet badge, or an OLED waveform with the title and current note if you record without a camera. Keys lights up seven keys and shows chords, Orbit connects notes in a twelve-position constellation, and Cosmos sends out neon waves and particles on each attack. The reactive styles follow actual notes from the keyboard, accompaniment, progressions and looper. All four work with or without the front camera.']
+        ['Four video styles', 'Pure shows mirrored camera footage with a subtle vignette or a minimalist cover with a title, chord and waveform. Stage sends beams and sparks up from the keys you hear. Club adds constellations, lens flares and bokeh, with rhythmic zoom and RGB split over camera footage or spotlights and a synth horizon without it. Music Video adds a prism and duotone to your footage or generates a star tunnel and animated mandala. The effects follow the energy of the mix and actual notes from the keyboard, accompaniment, progressions and looper.']
       ]
     }
   ]

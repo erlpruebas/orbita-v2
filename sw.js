@@ -1,4 +1,4 @@
-const CACHE_NAME = 'orbita-v2-hw-v6';
+const CACHE_NAME = 'orbita-v2-hw-v7';
 
 self.addEventListener('install', () => {
   self.skipWaiting();
