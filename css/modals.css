@@ -694,36 +694,22 @@
   letter-spacing: 0.05em;
 }
 
-.studio-master-modes {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 6px;
-}
-
-.hw-btn.studio-master-mode {
+.hw-btn.studio-master-comp {
   min-width: 0;
-  min-height: 32px;
-  padding: 4px;
+  min-height: 25px;
+  padding: 0 6px;
+  justify-content: center;
+  gap: 5px;
   background: var(--chassis-bg);
   font-size: 10px;
   font-weight: 800;
   letter-spacing: 0.08em;
 }
 
-.studio-master-mode[data-master-mode="clean"] { --master-mode-led: var(--led-emerald-bright); }
-.studio-master-mode[data-master-mode="comp"] { --master-mode-led: var(--led-cyan-bright); }
-.studio-master-mode[data-master-mode="clip"] { --master-mode-led: var(--led-amber-bright); }
-
-.hw-btn.studio-master-mode[aria-pressed="true"] {
-  color: var(--master-mode-led);
-  border-color: currentColor;
-  box-shadow: inset 0 0 10px color-mix(in srgb, currentColor 18%, transparent);
-}
-
 .studio-vu-box {
   box-sizing: border-box;
   min-width: 0;
-  padding: 6px 8px 5px;
+  padding: 4px 6px 3px;
   border: 1px solid var(--screen-border);
   border-radius: 7px;
   background: #090d0f;
@@ -733,9 +719,9 @@
 
 .studio-vu-header {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: auto minmax(0, 1fr) 8ch auto;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   color: var(--text-secondary);
   font-size: 10px;
   font-weight: 800;
@@ -752,7 +738,7 @@
 #studio-vu-db.is-clipped { color: #f87171; }
 
 .hw-btn.studio-vu-clip {
-  min-height: 26px;
+  min-height: 25px;
   padding: 0 7px;
   color: #c28b96;
   border-color: #55313a;
@@ -771,7 +757,7 @@
 #studio-vu-canvas {
   display: block;
   width: 100%;
-  height: 24px;
+  height: 20px;
 }
 
 .studio-vu-scale {

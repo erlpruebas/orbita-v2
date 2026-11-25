@@ -16,8 +16,26 @@ import { getState, setState } from './state.js';
 import { prepareFrontCamera } from './short-video.js';
 import { getActivePreset, setNoteEventObserver } from './synth-presets.js';
 import { formatChordLabel, getDiatonicDegrees, getNoteNameTitle, getNoteNameUpper } from './theory.js';
+import { buildFilteredVoiceSamples, COUNT_IN_MAX_LAG_MS, getVoiceFilterPreset, measureAcousticLagFromCountIn } from './voice-filter.js';
 
-export const MASTER_MODES = Object.freeze(['clean', 'comp', 'clip']);
+export { buildFilteredVoiceSamples, getVoiceFilterPreset } from './voice-filter.js';
+
+const MASTER_COMP_PRESETS = [
+  null,
+  { threshold: -4, knee: 18, ratio: 3, attack: 0.008, release: 0.18, softClip: false },
+  { threshold: -2, knee: 10, ratio: 8, attack: 0.004, release: 0.14, softClip: false },
+  { threshold: -1, knee: 4, ratio: 16, attack: 0.002, release: 0.10, softClip: true }
+];
+
+export function getMasterCompPreset(level) {
+  const preset = Number.isInteger(level) ? MASTER_COMP_PRESETS[level] : null;
+  return preset ? { ...preset } : null;
+}
+
+function getMasterCompLevel(settings) {
+  const { masterComp } = settings;
+  return Number.isInteger(masterComp) && masterComp >= 0 && masterComp <= 3 ? masterComp : 1;
+}
 
 export function linearPeakToDb(peak) {
   return peak <= 0 ? -Infinity : 20 * Math.log10(peak);
@@ -40,23 +58,13 @@ const softClipCurve = (() => {
   return curve;
 })();
 
-const VOICE_FILTER_PRESETS = [
-  { bleedCancel: 0, gateStrength: 0, gateFloor: 1.0, highpassHz: 40, deMudDb: 0, presenceDb: 0, lowpassHz: 20000 },
-  { bleedCancel: 0.40, gateStrength: 0.35, gateFloor: 0.32, highpassHz: 105, deMudDb: -3.0, presenceDb: 2.0, lowpassHz: 14000 },
-  { bleedCancel: 0.72, gateStrength: 0.65, gateFloor: 0.08, highpassHz: 155, deMudDb: -5.0, presenceDb: 3.5, lowpassHz: 10500 },
-  { bleedCancel: 1.0, gateStrength: 0.95, gateFloor: 0.01, highpassHz: 205, deMudDb: -6.5, presenceDb: 5.0, lowpassHz: 8200 }
-];
-
-export function getVoiceFilterPreset(level) {
-  const preset = Number.isInteger(level) ? VOICE_FILTER_PRESETS[level] : null;
-  return { ...(preset ?? VOICE_FILTER_PRESETS[0]) };
-}
-
 let isRecording = false;
 let isCaptureBusy = false;
 let isCountingIn = false;
 const countInTimers = new Set();
 const countInClicks = [];
+let countInCapture = null;
+let countInCalibration = null;
 let timerInterval = null;
 let statusCallback = null;
 let cameraCapture = null;
@@ -82,6 +90,7 @@ let workletFlush = null;
 let silentSink = null;
 let scriptProcessor = null;
 let scriptCaptureGate = null;
+let scriptTiming = null;
 
 // Fallback MediaRecorder si el navegador no soporta AudioWorklet (ej. HTTP sin localhost)
 let fallbackDest = null;
@@ -133,7 +142,13 @@ class OrbitaMultitrackProcessor extends AudioWorkletProcessor {
     this.processedThrough = currentFrame;
     this.allocateBlock();
     this.port.onmessage = ({ data }) => {
-      if (data.type === 'start') this.startFrame = data.frame;
+      if (data.type === 'start') {
+        this.startFrame = data.frame;
+        if (data.countIn) {
+          this.countInStart = data.countIn.startFrame;
+          this.countInVoice = new Float32Array(data.countIn.endFrame - this.countInStart);
+        }
+      }
       if (data.type === 'flush') {
         this.endFrame = data.frame ?? this.processedThrough;
         if (this.processedThrough >= this.endFrame) this.finish();
@@ -169,6 +184,16 @@ class OrbitaMultitrackProcessor extends AudioWorkletProcessor {
     if (!mL) return true;
     const mR = inputs[0][1] ?? mL;
     const vM = inputs[0][2];
+    if (this.countInVoice) {
+      const end = this.countInStart + this.countInVoice.length;
+      const from = Math.max(currentFrame, this.countInStart);
+      const to = Math.min(currentFrame + mL.length, end);
+      if (vM && from < to) this.countInVoice.set(vM.subarray(from - currentFrame, to - currentFrame), from - this.countInStart);
+      if (currentFrame + mL.length >= end) {
+        this.port.postMessage({ type: 'count-in-voice', frame: this.countInStart, samples: this.countInVoice }, [this.countInVoice.buffer]);
+        this.countInVoice = null;
+      }
+    }
     const limit = Math.min(mL.length, this.endFrame - currentFrame);
     let read = Math.max(0, this.startFrame - currentFrame);
     while (read < limit) {
@@ -263,149 +288,6 @@ function copyCapturedChannel(buffer, channel, chunks) {
   }
 }
 
-export function buildFilteredVoiceSamples(rawVoiceSamples, musicSamples, sampleRate, level, voiceOffsetMs = 0) {
-  const samples = rawVoiceSamples.slice();
-  const readMusic = musicSamples ? i => musicSamples[i] ?? 0 : null;
-  filterVoiceWithReference(samples, readMusic, sampleRate, level, voiceOffsetMs);
-  return samples;
-}
-
-// Busca el retardo dominante para que el sonido directo pueda caer exactamente en uno de los taps.
-function findDominantBleedDelay(raw, readMusic, shift, firstDelay, lastDelay) {
-  const stride = Math.max(1, Math.floor(raw.length / 2048));
-  let bestDelay = 0;
-  let bestCorrelation = 0.14;
-  for (let delay = firstDelay; delay <= lastDelay; delay++) {
-    let cross = 0;
-    let micPower = 0;
-    let musicPower = 0;
-    for (let i = 0; i < raw.length; i += stride) {
-      const music = readMusic(i + shift - delay);
-      const mic = raw[i];
-      cross += mic * music;
-      micPower += mic * mic;
-      musicPower += music * music;
-    }
-    const correlation = Math.abs(cross) / Math.sqrt(micPower * musicPower + 1e-12);
-    if (correlation > bestCorrelation) {
-      bestCorrelation = correlation;
-      bestDelay = delay;
-    }
-  }
-  return bestDelay;
-}
-
-function cancelSpeakerBleed(samples, readMusic, rate, shift, windowSize, musicRms, micRms, amount) {
-  const firstDelay = -Math.round(0.003 * rate);
-  const lastDelay = Math.round(0.018 * rate);
-  const dominant = findDominantBleedDelay(samples, readMusic, shift, firstDelay, lastDelay);
-  const weights = new Float32Array(24);
-  const taps = Int32Array.from(weights, (_, k) => Math.round(k <= 3
-    ? firstDelay * (1 - k / 3)
-    : lastDelay * (k - 3) / 20));
-  let nearest = 1;
-  for (let k = 2; k < taps.length - 1; k++) {
-    if (Math.abs(taps[k] - dominant) < Math.abs(taps[nearest] - dominant)) nearest = k;
-  }
-  if (dominant > firstDelay && dominant < lastDelay) taps[nearest] = dominant;
-  for (let k = 0; k < taps.length; k++) taps[k] -= firstDelay;
-
-  // El anillo evalúa la referencia una vez por muestra, incluida la base si existe.
-  const history = new Float32Array(2 ** Math.ceil(Math.log2(lastDelay - firstDelay + 1)));
-  const mask = history.length - 1;
-  for (let i = -history.length + 1; i < 0; i++) history[i & mask] = readMusic(i + shift - firstDelay);
-  const adaptEvery = Math.max(1, Math.round(rate / 12000));
-  let nextAdapt = 0;
-  for (let w = 0; w < musicRms.length; w++) {
-    const start = w * windowSize;
-    const end = Math.min(start + windowSize, samples.length);
-    const ratio = micRms[w] / Math.max(1e-6, musicRms[w]);
-    // La voz dominante reduce el paso de adaptación. Los pesos ya aprendidos siguen activos.
-    const step = 0.22 / (1 + 16 * Math.max(0, ratio - 1) ** 2);
-    for (let i = start; i < end; i++) {
-      history[i & mask] = readMusic(i + shift - firstDelay);
-      let prediction = 0;
-      for (let k = 0; k < taps.length; k++) prediction += weights[k] * history[(i - taps[k]) & mask];
-      const error = samples[i] - prediction;
-      samples[i] -= amount * prediction;
-      if (i < nextAdapt) continue;
-      nextAdapt = i + adaptEvery;
-      let power = 0;
-      for (let k = 0; k < taps.length; k++) {
-        const reference = history[(i - taps[k]) & mask];
-        power += reference * reference;
-      }
-      if (power < 1e-9) continue;
-      const correction = step * error / (power + 1e-5);
-      for (let k = 0; k < taps.length; k++) weights[k] += correction * history[(i - taps[k]) & mask];
-    }
-  }
-}
-
-function filterVoiceWithReference(samples, readMusic, sampleRate, level, voiceOffsetMs) {
-  const { bleedCancel, gateStrength, gateFloor } = getVoiceFilterPreset(level);
-  if (!gateStrength || samples.length === 0) return;
-
-  const shift = Math.round((Number(voiceOffsetMs) || 0) * sampleRate / 1000);
-  const windowSize = Math.max(1, Math.round(sampleRate * 0.020));
-  const musicRms = new Float32Array(Math.ceil(samples.length / windowSize));
-  const voiceRms = new Float32Array(musicRms.length);
-  let hasMusic = false;
-  if (readMusic && bleedCancel) {
-    for (let w = 0; w < musicRms.length; w++) {
-      const start = w * windowSize;
-      const end = Math.min(start + windowSize, samples.length);
-      let musicPower = 0;
-      let micPower = 0;
-      for (let i = start; i < end; i++) {
-        const music = readMusic(i + shift);
-        musicPower += music * music;
-        micPower += samples[i] * samples[i];
-      }
-      musicRms[w] = Math.sqrt(musicPower / (end - start));
-      voiceRms[w] = Math.sqrt(micPower / (end - start));
-      hasMusic ||= musicRms[w] > 1e-6;
-    }
-    if (hasMusic) cancelSpeakerBleed(samples, readMusic, sampleRate, shift, windowSize, musicRms, voiceRms, bleedCancel);
-  }
-
-  for (let w = 0; w < voiceRms.length; w++) {
-    const start = w * windowSize;
-    const end = Math.min(start + windowSize, samples.length);
-    let power = 0;
-    for (let i = start; i < end; i++) power += samples[i] * samples[i];
-    voiceRms[w] = Math.sqrt(power / (end - start));
-  }
-  const sorted = voiceRms.slice().sort();
-  const noise = sorted[Math.floor((sorted.length - 1) * 0.20)];
-  const singing = sorted[Math.floor((sorted.length - 1) * 0.92)];
-  const range = singing - noise;
-  const threshold = noise + range * (0.12 + 0.25 * gateStrength);
-  const knee = Math.max(1e-8, noise * 0.25, range * 0.15);
-  const attack = 1 - Math.exp(-1 / (0.005 * sampleRate));
-  const holdSamples = Math.round(0.035 * sampleRate);
-  const release = 1 - Math.exp(-1 / (0.085 * sampleRate));
-  let gain = gateFloor;
-  let heldGain = gateFloor;
-  let hold = 0;
-  for (let w = 0; w < voiceRms.length; w++) {
-    const reinforcement = gateStrength * Math.min((noise + range) * 0.11, musicRms[w] * 0.25);
-    const open = safeParam((voiceRms[w] - threshold - reinforcement) / knee, 0, 1);
-    const target = gateFloor + (1 - gateFloor) * open * open * (3 - 2 * open);
-    const end = Math.min((w + 1) * windowSize, samples.length);
-    for (let i = w * windowSize; i < end; i++) {
-      if (target >= heldGain || hold <= 0) {
-        heldGain = target;
-        hold = holdSamples;
-      } else {
-        hold--;
-      }
-      gain += (heldGain - gain) * (heldGain > gain ? attack : release);
-      samples[i] *= gain;
-    }
-  }
-}
-
 function getKeyboardDegrees(state) {
   const { rootSemitone, scaleMode, octaveOffset, customScale, notation } = state;
   return getDiatonicDegrees(rootSemitone, scaleMode, octaveOffset, customScale, notation);
@@ -445,6 +327,21 @@ function captureSamples(frame, musicL, musicR, voice) {
   rawMusicL.push(musicL);
   rawMusicR.push(musicR);
   if (hasMicActive && voice) rawVoice.push(voice);
+}
+
+function finishCountInCalibration(sampleRate) {
+  if (!countInCapture) return;
+  const { startFrame, endFrame, clickOffsetsSamples, countInVoiceChunks } = countInCapture;
+  const [first] = countInVoiceChunks;
+  const complete = countInVoiceChunks.length === 1 && first.frame === startFrame && first.samples.length === endFrame - startFrame;
+  if (first) {
+    const voice = complete ? first.samples : new Float32Array(endFrame - startFrame);
+    if (!complete) {
+      for (const chunk of countInVoiceChunks) voice.set(chunk.samples, chunk.frame - startFrame);
+    }
+    countInCalibration = measureAcousticLagFromCountIn(voice, clickOffsetsSamples, sampleRate);
+  }
+  countInCapture = null;
 }
 
 function setCameraLivePreview(stream) {
@@ -496,7 +393,7 @@ function getMusicReference(musicBuffer, backingBuffer, backingCaptureVol, backin
 
 function getStudioVoice(settings) {
   if (!currentSession?.voiceBuffer) return null;
-  if (!getVoiceFilterPreset(settings.voiceFilter).gateStrength) {
+  if (!getVoiceFilterPreset(settings.voiceFilter).noiseStrength) {
     return { buffer: currentSession.voiceBuffer, peaks: currentSession.voicePeaks };
   }
   const { voiceFilter: level, voiceOffsetMs = 0 } = settings;
@@ -505,9 +402,8 @@ function getStudioVoice(settings) {
   const { voiceBuffer, musicBuffer, backingBuffer, backingCaptureVol, backingStartSec } = currentSession;
   const readMusic = getMusicReference(musicBuffer, backingBuffer, backingCaptureVol, backingStartSec);
   const buffer = getAudioContext().createBuffer(1, voiceBuffer.length, voiceBuffer.sampleRate);
-  const samples = buffer.getChannelData(0);
-  samples.set(voiceBuffer.getChannelData(0));
-  filterVoiceWithReference(samples, readMusic, voiceBuffer.sampleRate, level, voiceOffsetMs);
+  const samples = buildFilteredVoiceSamples(voiceBuffer.getChannelData(0), readMusic, voiceBuffer.sampleRate, level, voiceOffsetMs);
+  buffer.getChannelData(0).set(samples);
   filteredVoice = { level, voiceOffsetMs, buffer, peaks: computeWaveformPeaks(samples) };
   return filteredVoice;
 }
@@ -641,32 +537,31 @@ function buildTwoTrackMixGraph(ctx, destNode, settings, hasBackingTrack = false)
     masterBusGain.connect(meterSplitter).connect(rightAnalyser, 1);
   }
 
-  const cleanGain = ctx.createGain();
-  const compGain = ctx.createGain();
-  const clipGain = ctx.createGain();
-  const modeGains = { clean: cleanGain, comp: compGain, clip: clipGain };
-  const initialMode = MASTER_MODES.includes(settings.masterMode) ? settings.masterMode : 'comp';
-  for (const mode of MASTER_MODES) {
-    modeGains[mode].gain.setValueAtTime(Number(mode === initialMode), now);
-    modeGains[mode].connect(destNode);
-  }
-  masterBusGain.connect(cleanGain);
-
-  const compressor = ctx.createDynamicsCompressor();
-  compressor.threshold.setValueAtTime(-3, now);
-  compressor.knee.setValueAtTime(12, now);
-  compressor.ratio.setValueAtTime(6, now);
-  compressor.attack.setValueAtTime(0.004, now);
-  compressor.release.setValueAtTime(0.14, now);
-  masterBusGain.connect(compressor).connect(compGain);
-
-  const clipInput = ctx.createGain();
-  const softClip = ctx.createWaveShaper();
-  // El WaveShaper limita la entrada de la tabla a ±1. Reservar margen conserva la saturación por encima de 0 dB.
-  clipInput.gain.setValueAtTime(1 / SOFT_CLIP_HEADROOM, now);
-  softClip.curve = softClipCurve;
-  softClip.oversample = '2x';
-  masterBusGain.connect(clipInput).connect(softClip).connect(clipGain);
+  let masterComp = getMasterCompLevel(settings);
+  const offline = typeof ctx.startRendering === 'function';
+  // Mantener los compresores activos en preescucha permite conmutar con un fundido.
+  const masterPaths = (offline ? [masterComp] : [0, 1, 2, 3]).map(level => {
+    const preset = getMasterCompPreset(level);
+    let output = masterBusGain;
+    if (preset) {
+      const { softClip, ...params } = preset;
+      const compressor = ctx.createDynamicsCompressor();
+      for (const [param, value] of Object.entries(params)) compressor[param].setValueAtTime(value, now);
+      output = output.connect(compressor);
+      if (softClip) {
+        const clipInput = ctx.createGain();
+        const shaper = ctx.createWaveShaper();
+        clipInput.gain.setValueAtTime(1 / SOFT_CLIP_HEADROOM, now);
+        shaper.curve = softClipCurve;
+        shaper.oversample = '2x';
+        output = output.connect(clipInput).connect(shaper);
+      }
+    }
+    const path = ctx.createGain();
+    path.gain.setValueAtTime(Number(level === masterComp), now);
+    output.connect(path).connect(destNode);
+    return path;
+  });
 
   // PISTA 1: Música
   const musicGain = ctx.createGain();
@@ -704,8 +599,8 @@ function buildTwoTrackMixGraph(ctx, destNode, settings, hasBackingTrack = false)
   const voiceEq = ctx.createGain();
   const voiceBypass = ctx.createGain();
   const postEq = ctx.createGain();
-  voiceEq.gain.setValueAtTime(filter.gateStrength ? 1 : 0, now);
-  voiceBypass.gain.setValueAtTime(filter.gateStrength ? 0 : 1, now);
+  voiceEq.gain.setValueAtTime(filter.noiseStrength ? 1 : 0, now);
+  voiceBypass.gain.setValueAtTime(filter.noiseStrength ? 0 : 1, now);
   voiceInputGain.connect(highpass).connect(highpass2).connect(deMud).connect(presence).connect(lowpass).connect(voiceEq).connect(postEq);
   voiceInputGain.connect(voiceBypass).connect(postEq);
 
@@ -787,9 +682,10 @@ function buildTwoTrackMixGraph(ctx, destNode, settings, hasBackingTrack = false)
     updateParams(newSettings) {
       const t = ctx.currentTime;
       masterBusGain.gain.setTargetAtTime(safeParam(newSettings.masterVol ?? 1.0, 0, 2.0), t, 0.015);
-      const masterMode = MASTER_MODES.includes(newSettings.masterMode) ? newSettings.masterMode : 'comp';
-      for (const mode of MASTER_MODES) {
-        modeGains[mode].gain.setTargetAtTime(Number(mode === masterMode), t, 0.015);
+      const level = getMasterCompLevel(newSettings);
+      if (!offline && level !== masterComp) {
+        masterComp = level;
+        masterPaths.forEach((path, i) => path.gain.setTargetAtTime(Number(i === level), t, 0.015));
       }
       musicGain.gain.setTargetAtTime(safeParam(newSettings.musicVol ?? 0.90, 0, 2.0), t, 0.02);
       backingGain?.gain.setTargetAtTime(safeParam(newSettings.backingVol ?? 0.90, 0, 1.5), t, 0.02);
@@ -801,8 +697,8 @@ function buildTwoTrackMixGraph(ctx, destNode, settings, hasBackingTrack = false)
       deMud.gain.setTargetAtTime(f.deMudDb, t, 0.02);
       presence.gain.setTargetAtTime(f.presenceDb, t, 0.02);
       lowpass.frequency.setTargetAtTime(f.lowpassHz, t, 0.02);
-      voiceEq.gain.setTargetAtTime(f.gateStrength ? 1 : 0, t, 0.02);
-      voiceBypass.gain.setTargetAtTime(f.gateStrength ? 0 : 1, t, 0.02);
+      voiceEq.gain.setTargetAtTime(f.noiseStrength ? 1 : 0, t, 0.02);
+      voiceBypass.gain.setTargetAtTime(f.noiseStrength ? 0 : 1, t, 0.02);
 
       const c = CHORUS_PRESETS[Math.max(0, Math.min(3, newSettings.voiceChorus || 0))];
       chorusWet.gain.setTargetAtTime(c.wet, t, 0.03);
@@ -828,7 +724,7 @@ function buildTwoTrackMixGraph(ctx, destNode, settings, hasBackingTrack = false)
       echoFeedback.disconnect();
       masterBusGain.disconnect();
       meterSplitter?.disconnect();
-      for (const mode of MASTER_MODES) modeGains[mode].disconnect();
+      for (const path of masterPaths) path.disconnect();
     }
   };
 }
@@ -862,6 +758,8 @@ async function prepareDemoCapture(ctx) {
   rawMusicL = [];
   rawMusicR = [];
   rawVoice = [];
+  countInCapture = null;
+  countInCalibration = null;
   fallbackChunks = [];
   hasMicActive = false;
   micWarningReason = '';
@@ -944,6 +842,11 @@ async function prepareDemoCapture(ctx) {
           workletFlush?.done();
           return;
         }
+        if (data.type === 'count-in-voice') {
+          countInCapture?.countInVoiceChunks.push({ frame: data.frame, samples: data.samples });
+          finishCountInCalibration(ctx.sampleRate);
+          return;
+        }
         if (recordingStartAudioTime === null || (!isDemoRecordingOrCountIn() && !workletFlush)) return;
         // Conservar solo las muestras desde el tiempo 1, incluso si cae dentro de un bloque.
         const startFrame = Math.ceil(recordingStartAudioTime * ctx.sampleRate);
@@ -964,18 +867,67 @@ async function prepareDemoCapture(ctx) {
   // En navegadores sin AudioWorklet, conservar las pistas separadas también en el respaldo.
   if (!workletNode && typeof ctx.createScriptProcessor === 'function') {
     try {
-      scriptProcessor = ctx.createScriptProcessor(1024, 3, 1);
-      scriptProcessor.onaudioprocess = ({ inputBuffer }) => {
-        if (!isRecording) return;
-        captureSamples(null, inputBuffer.getChannelData(0).slice(), inputBuffer.getChannelData(1).slice(),
-          hasMicActive ? inputBuffer.getChannelData(2).slice() : null);
-      };
-      scriptCaptureGate = ctx.createGain();
-      scriptCaptureGate.gain.setValueAtTime(0, ctx.currentTime);
-      mergerNode.connect(scriptCaptureGate).connect(scriptProcessor);
+      if (typeof ctx.createConstantSource === 'function') {
+        // Un cuarto canal marca ambos intervalos en el reloj de audio, incluso dentro de un bloque.
+        scriptProcessor = ctx.createScriptProcessor(1024, 4, 1);
+        scriptTiming = ctx.createConstantSource();
+        scriptTiming.offset.setValueAtTime(0, ctx.currentTime);
+        musicSplitter.disconnect(mergerNode);
+        micHighpass?.disconnect(mergerNode);
+        mergerNode = ctx.createChannelMerger(4);
+        musicSplitter.connect(mergerNode, 0, 0);
+        musicSplitter.connect(mergerNode, 1, 1);
+        micHighpass?.connect(mergerNode, 0, 2);
+        scriptTiming.connect(mergerNode, 0, 3);
+        scriptTiming.start();
+        mergerNode.connect(scriptProcessor);
+
+        let recordedFrames = 0;
+        scriptProcessor.onaudioprocess = ({ inputBuffer }) => {
+          const timing = inputBuffer.getChannelData(3);
+          const start = timing.indexOf(3);
+          if (countInCapture) {
+            const voiceStart = timing.findIndex(sample => sample >= 1 && sample < 2);
+            if (voiceStart >= 0) {
+              const { startFrame, endFrame, countInVoiceChunks } = countInCapture;
+              const frame = startFrame + Math.round((timing[voiceStart] - 1) * (endFrame - startFrame));
+              let voiceEnd = voiceStart + 1;
+              while (voiceEnd < timing.length && timing[voiceEnd] >= 1 && timing[voiceEnd] < 2) voiceEnd++;
+              const end = Math.min(voiceEnd, voiceStart + endFrame - frame);
+              if (end > voiceStart) countInVoiceChunks.push({
+                frame, samples: inputBuffer.getChannelData(2).slice(voiceStart, end)
+              });
+              if (end < timing.length || frame + end - voiceStart === endFrame) finishCountInCalibration(ctx.sampleRate);
+            } else if (start >= 0 || countInCapture.countInVoiceChunks.length) {
+              finishCountInCalibration(ctx.sampleRate);
+            }
+          }
+          if (start < 0 || !isDemoRecordingOrCountIn()) return;
+          const frame = Math.ceil(recordingStartAudioTime * ctx.sampleRate) + recordedFrames;
+          const slice = channel => inputBuffer.getChannelData(channel).slice(start);
+          captureSamples(frame, slice(0), slice(1), hasMicActive ? slice(2) : null);
+          recordedFrames += timing.length - start;
+        };
+      } else {
+        scriptProcessor = ctx.createScriptProcessor(1024, 3, 1);
+        scriptProcessor.onaudioprocess = ({ inputBuffer }) => {
+          if (!isRecording) return;
+          captureSamples(null, inputBuffer.getChannelData(0).slice(), inputBuffer.getChannelData(1).slice(),
+            hasMicActive ? inputBuffer.getChannelData(2).slice() : null);
+        };
+        scriptCaptureGate = ctx.createGain();
+        scriptCaptureGate.gain.setValueAtTime(0, ctx.currentTime);
+        mergerNode.connect(scriptCaptureGate).connect(scriptProcessor);
+      }
       scriptProcessor.connect(silentSink);
     } catch (_) {
+      try { scriptTiming?.stop(); } catch (_) {}
+      for (const node of [scriptProcessor, scriptTiming, scriptCaptureGate]) {
+        try { node?.disconnect(); } catch (_) {}
+      }
       scriptProcessor = null;
+      scriptTiming = null;
+      scriptCaptureGate = null;
     }
   }
 
@@ -1022,15 +974,17 @@ function scheduleDemoCountIn(ctx) {
   const beatDur = 60 / (bpm || 92);
   const t0 = ctx.currentTime + 0.04;
   const recordStartAt = t0 + 4 * beatDur;
+  const startFrame = Math.ceil(t0 * ctx.sampleRate);
+  const recordStartFrame = Math.ceil(recordStartAt * ctx.sampleRate);
+  const clickOffsetsSamples = [];
   recordingStartAudioTime = recordStartAt;
   isCountingIn = true;
-  workletNode?.port.postMessage?.({ type: 'start', frame: Math.ceil(recordStartAt * ctx.sampleRate) });
-  scriptCaptureGate?.gain.setValueAtTime(1, recordStartAt);
-  if (fallbackRecorder) musicTapGain.gain.setValueAtTime(1, recordStartAt);
 
   for (let i = 0; i < 4; i++) {
     const clickTime = t0 + i * beatDur;
-    countInClicks.push(triggerMetronomeClick(clickTime, i === 0));
+    const click = triggerMetronomeClick(clickTime, i === 0);
+    countInClicks.push(click);
+    clickOffsetsSamples.push(Math.ceil(click.startsAt * ctx.sampleRate) - startFrame);
     scheduleCountInCue(ctx, clickTime, () => {
       setState({ currentBeat: i });
       statusCallback?.({
@@ -1039,6 +993,26 @@ function scheduleDemoCountIn(ctx) {
       });
     });
   }
+
+  const endFrame = Math.min(recordStartFrame,
+    startFrame + clickOffsetsSamples[3] + Math.ceil((COUNT_IN_MAX_LAG_MS + 1) * ctx.sampleRate / 1000));
+  if (hasMicActive && (workletNode || scriptTiming) && endFrame > startFrame) {
+    countInCapture = { startFrame, endFrame, clickOffsetsSamples, countInVoiceChunks: [] };
+  }
+  workletNode?.port.postMessage?.({
+    type: 'start', frame: recordStartFrame, countIn: countInCapture ? { startFrame, endFrame } : null
+  });
+  if (scriptTiming) {
+    if (countInCapture) {
+      // La rampa codifica la posición de cada muestra aunque el procesador pierda un bloque.
+      scriptTiming.offset.setValueAtTime(1, startFrame / ctx.sampleRate);
+      scriptTiming.offset.linearRampToValueAtTime(2, endFrame / ctx.sampleRate);
+      if (endFrame < recordStartFrame) scriptTiming.offset.setValueAtTime(0, endFrame / ctx.sampleRate);
+    }
+    scriptTiming.offset.setValueAtTime(3, recordStartFrame / ctx.sampleRate);
+  }
+  scriptCaptureGate?.gain.setValueAtTime(1, recordStartAt);
+  if (fallbackRecorder) musicTapGain.gain.setValueAtTime(1, recordStartAt);
 
   // Programar el transporte con margen para que Web Audio ejecute el primer paso en recordStartAt.
   scheduleCountInCue(ctx, recordStartAt - 0.06, () => {
@@ -1098,8 +1072,9 @@ function disconnectDemoCapture() {
   }
   if (workletNode) workletNode.port.onmessage = null;
   if (scriptProcessor) scriptProcessor.onaudioprocess = null;
+  try { scriptTiming?.stop(); } catch (_) {}
   for (const node of [musicTapGain, musicSplitter, micSource, micHighpass, mergerNode,
-    workletNode, scriptProcessor, scriptCaptureGate, silentSink, fallbackDest]) {
+    workletNode, scriptProcessor, scriptCaptureGate, scriptTiming, silentSink, fallbackDest]) {
     try { node?.disconnect(); } catch (_) {}
   }
   releaseStream(micStream);
@@ -1114,9 +1089,11 @@ function disconnectDemoCapture() {
   workletNode = null;
   scriptProcessor = null;
   scriptCaptureGate = null;
+  scriptTiming = null;
   silentSink = null;
   fallbackDest = null;
   fallbackRecorder = null;
+  countInCapture = null;
 }
 
 function flushMultitrackWorklet(endFrame) {
@@ -1233,11 +1210,10 @@ async function finishDemoRecording() {
     backingPeaks = computeWaveformPeaks(left, musicPeaks.length, length, offset, right);
   }
 
-  // Estimar el desfase óptimo automáticamente:
-  // 1) Correlación cruzada de envolventes (detecta filtración acústica o pulsos rítmicos entre 40 ms y 320 ms)
-  // 2) Combinado con la latencia hardware medida (`detectedRoundTripMs`)
-  const readMusic = getMusicReference(musicBuffer, backingBuffer, backingCaptureVol, backingStartSec);
-  const autoMeasuredOffsetMs = estimateVoiceSyncOffsetMs(musicBuffer, voiceBuffer, detectedRoundTripMs, readMusic);
+  const autoMeasuredOffsetMs = countInCalibration?.detected
+    ? countInCalibration.offsetMs
+    : estimateVoiceSyncOffsetMs(musicBuffer, voiceBuffer, detectedRoundTripMs,
+      getMusicReference(musicBuffer, backingBuffer, backingCaptureVol, backingStartSec));
   const voiceSamples = voiceBuffer?.getChannelData(0);
   const voicePeaks = voiceSamples ? computeWaveformPeaks(voiceSamples, 220) : null;
   const noteEvents = recordedNoteEvents
@@ -1268,6 +1244,7 @@ async function finishDemoRecording() {
     noteEvents,
     keyboardDegrees,
     detectedRoundTripMs,
+    countInCalibration,
     autoMeasuredOffsetMs
   };
 

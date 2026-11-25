@@ -278,6 +278,7 @@ export function triggerMetronomeClick(when = null, isDownbeat = false) {
   const endsAt = t + 0.048;
   osc.stop(endsAt);
   return {
+    startsAt: t,
     endsAt,
     stop() {
       gain.disconnect();

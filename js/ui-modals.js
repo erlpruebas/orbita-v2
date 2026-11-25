@@ -40,8 +40,8 @@ import {
   computeTonalityAnalysis
 } from './tonality-mic.js';
 import {
-  MASTER_MODES,
   dbToMeterRatio,
+  linearPeakToDb,
   readLiveMasterMeter,
   cancelDemoCountIn,
   isDemoCountIn,
@@ -88,7 +88,7 @@ const studioMix = {
   voiceVol: 1.15,
   backingVol: 0.90,
   masterVol: 1.0,
-  masterMode: 'comp',
+  masterComp: 1,
   voiceEcho: 0,      // 0..3 LEDs cian
   voiceChorus: 0,    // 0..3 LEDs violeta
   voiceFilter: 0,
@@ -100,7 +100,8 @@ const studioMix = {
 let appliedVoiceOffsetMs = studioMix.voiceOffsetMs;
 let studioVuHoldDb = -Infinity;
 let studioVuHoldUntil = 0;
-let studioVuLastFrame = 0;
+let studioVuRms = 0;
+let studioVuLastFrame = null;
 let studioVuClipped = false;
 let studioVuIdleFrame = null;
 
@@ -151,6 +152,7 @@ export function applyI18nToDOM() {
   renderDemoExportLabels();
   renderVideoStatus();
   updateVoiceFilterLabel();
+  updateMasterCompLabel();
 }
 
 function initCustomEditor() {
@@ -825,13 +827,23 @@ function updateVoiceFilterLabel() {
     translate('studio.filterLevel', { level: studioMix.voiceFilter }));
 }
 
+function updateMasterCompLabel() {
+  document.getElementById('btn-master-comp').setAttribute('aria-label',
+    translate('studio.masterCompLevel', { level: studioMix.masterComp }));
+}
+
 function updateStudioMasterControls() {
   const percent = Math.round(studioMix.masterVol * 100);
   document.getElementById('mix-master-vol').value = String(percent);
   document.getElementById('mix-master-val').textContent = `${percent}%`;
-  for (const button of document.querySelectorAll('#studio-master-mode-row [data-master-mode]')) {
-    button.setAttribute('aria-pressed', String(button.dataset.masterMode === studioMix.masterMode));
+  for (let i = 1; i <= 3; i++) {
+    document.getElementById(`comp-led-${i}`).classList.toggle('on-cyan', studioMix.masterComp >= i);
   }
+  updateMasterCompLabel();
+}
+
+function studioMeterColor(db, green, amber, red) {
+  return db > 0 ? red : db >= -6 ? amber : green;
 }
 
 function drawStudioMasterMeter(peakDb = -Infinity) {
@@ -847,40 +859,49 @@ function drawStudioMasterMeter(peakDb = -Infinity) {
   const { width, height } = canvas;
   const segmentCount = 42;
   const step = width / segmentCount;
-  const liveWidth = dbToMeterRatio(peakDb) * width;
+  const liveWidth = dbToMeterRatio(linearPeakToDb(studioVuRms)) * width;
   const zeroX = dbToMeterRatio(0) * width;
   ctx.clearRect(0, 0, width, height);
   for (let i = 0; i < segmentCount; i++) {
     const x = i * step;
     const db = i + 1 - 36;
     const litWidth = Math.min(step - 2, liveWidth - x);
-    ctx.fillStyle = db > 0 ? '#35171c' : db >= -6 ? '#302616' : '#102820';
-    ctx.fillRect(x, 9, step - 2, 16);
+    ctx.fillStyle = studioMeterColor(db, '#102820', '#302616', '#35171c');
+    ctx.fillRect(x, 5, step - 2, 14);
     if (litWidth > 0) {
-      ctx.fillStyle = db > 0 ? '#ef4444' : db >= -6 ? '#f59e0b' : '#10b981';
-      ctx.fillRect(x, 9, litWidth, 16);
-      ctx.fillStyle = db > 0 ? '#f87171' : db >= -6 ? '#fbbf24' : '#34d399';
-      ctx.fillRect(x, 9, litWidth, 2);
+      ctx.fillStyle = studioMeterColor(db, '#10b981', '#f59e0b', '#ef4444');
+      ctx.fillRect(x, 5, litWidth, 14);
+      ctx.fillStyle = studioMeterColor(db, '#34d399', '#fbbf24', '#f87171');
+      ctx.fillRect(x, 5, litWidth, 2);
     }
   }
 
   ctx.fillStyle = '#b6f1ff';
-  ctx.fillRect(zeroX - 2, 3, 2, 28);
+  ctx.fillRect(zeroX - 1, 0, 2, height);
+  if (Number.isFinite(peakDb)) {
+    const x = Math.min(width - 3, Math.max(0, dbToMeterRatio(peakDb) * width - 1));
+    ctx.fillStyle = studioMeterColor(peakDb, '#a7f3d0', '#fde68a', '#ff9aa9');
+    ctx.fillRect(x, 3, 3, height - 7);
+  }
   if (studioVuHoldDb > -36) {
-    const holdX = Math.min(width - 2, dbToMeterRatio(studioVuHoldDb) * width);
-    ctx.fillStyle = studioVuHoldDb > 0 ? '#fda4af' : studioVuHoldDb > -6 ? '#fde68a' : '#a7f3d0';
-    ctx.fillRect(holdX, 6, 2, 22);
+    const x = Math.min(width - 2, dbToMeterRatio(studioVuHoldDb) * width);
+    ctx.fillStyle = studioMeterColor(studioVuHoldDb, '#6ee7b7', '#fcd34d', '#fda4af');
+    ctx.fillRect(x, height - 4, 2, 4);
   }
 }
 
-function updateStudioMasterMeter({ peakDb, clipped }, now = performance.now()) {
+function updateStudioMasterMeter({ peakDb, rmsDb, clipped }, now = performance.now()) {
+  const elapsed = Math.max(0, now - (studioVuLastFrame ?? now - 16));
+  const rms = 10 ** (rmsDb / 20);
+  const timeConstant = rms > studioVuRms ? 45 : 180;
+  studioVuRms += (rms - studioVuRms) * (1 - Math.exp(-elapsed / timeConstant));
   const displayPeak = Math.min(6, peakDb);
   if (displayPeak > -36 && displayPeak >= studioVuHoldDb) {
     studioVuHoldDb = displayPeak;
     studioVuHoldUntil = now + 900;
   } else if (now > studioVuHoldUntil) {
-    const elapsed = Math.max(0, now - Math.max(studioVuLastFrame, studioVuHoldUntil));
-    studioVuHoldDb = Math.max(displayPeak, studioVuHoldDb - elapsed * 0.028);
+    const decayTime = Math.min(elapsed, now - studioVuHoldUntil);
+    studioVuHoldDb = Math.max(displayPeak, studioVuHoldDb - decayTime * 0.028);
   }
   studioVuLastFrame = now;
   studioVuClipped ||= clipped;
@@ -888,8 +909,9 @@ function updateStudioMasterMeter({ peakDb, clipped }, now = performance.now()) {
 }
 
 function animateStudioMeterToRest(now) {
-  updateStudioMasterMeter({ peakDb: -Infinity, clipped: false }, now);
-  studioVuIdleFrame = studioVuHoldDb > -36 ? requestAnimationFrame(animateStudioMeterToRest) : null;
+  updateStudioMasterMeter({ peakDb: -Infinity, rmsDb: -Infinity, clipped: false }, now);
+  const active = studioVuHoldDb > -36 || linearPeakToDb(studioVuRms) > -36;
+  studioVuIdleFrame = active ? requestAnimationFrame(animateStudioMeterToRest) : null;
 }
 
 function cancelStudioMeterIdleAnimation() {
@@ -897,13 +919,16 @@ function cancelStudioMeterIdleAnimation() {
   studioVuIdleFrame = null;
 }
 
-function resetStudioMasterMeter(peakDb = -Infinity) {
-  cancelStudioMeterIdleAnimation();
+function resetStudioMasterMeter(resetRms = true) {
+  if (resetRms) {
+    cancelStudioMeterIdleAnimation();
+    studioVuRms = 0;
+    studioVuLastFrame = null;
+  }
   studioVuHoldDb = -Infinity;
   studioVuHoldUntil = 0;
-  studioVuLastFrame = 0;
   studioVuClipped = false;
-  drawStudioMasterMeter(peakDb);
+  drawStudioMasterMeter(readLiveMasterMeter().peakDb);
 }
 
 function clampStudioSeek(sec) {
@@ -1118,11 +1143,13 @@ function openDemoStudioModal(session) {
   studioMix.voiceVol = 1.15;
   studioMix.backingVol = 0.90;
   studioMix.masterVol = 1.0;
-  studioMix.masterMode = 'comp';
+  studioMix.masterComp = 1;
   studioMix.voiceEcho = 0;
   studioMix.voiceChorus = 0;
   studioMix.voiceFilter = 0;
-  studioMix.voiceOffsetMs = getSavedVoiceSyncMs(session.autoMeasuredOffsetMs ?? -110);
+  studioMix.voiceOffsetMs = session.countInCalibration?.detected
+    ? session.autoMeasuredOffsetMs
+    : getSavedVoiceSyncMs(session.autoMeasuredOffsetMs ?? -110);
   appliedVoiceOffsetMs = studioMix.voiceOffsetMs;
   studioMix.trimStartSec = 0;
   studioMix.trimEndSec = session.durationSec;
@@ -1365,16 +1392,12 @@ export function initModalsUI() {
     updateStudioMasterControls();
     updateLivePreviewMix(studioMix);
   });
-  document.getElementById('studio-master-mode-row').addEventListener('click', event => {
-    const mode = event.target.closest('[data-master-mode]')?.dataset.masterMode;
-    if (!MASTER_MODES.includes(mode)) return;
-    studioMix.masterMode = mode;
+  document.getElementById('btn-master-comp').addEventListener('click', () => {
+    studioMix.masterComp = (studioMix.masterComp + 1) % 4;
     updateStudioMasterControls();
     updateLivePreviewMix(studioMix);
   });
-  document.getElementById('studio-vu-clip').addEventListener('click', () => {
-    resetStudioMasterMeter(readLiveMasterMeter().peakDb);
-  });
+  document.getElementById('studio-vu-clip').addEventListener('click', () => resetStudioMasterMeter(false));
 
   // Controles de Sincronización Voz vs Música (Compensación de latencia hardware en ms)
   const applyVoiceSyncOffset = (newMs, commit = true) => {

@@ -21,12 +21,13 @@ import { POPULAR_PROGRESSIONS, selectProgression, setProgressionVisualCallback }
 import { getState, setState } from '../js/state.js';
 import { getBackingTrackDestination, getDrumDestination, getMasterOutputNode, setBackingTrackVolume } from '../js/audio-core.js';
 import {
-  MASTER_MODES, dbToMeterRatio, linearPeakToDb, readLiveMasterMeter,
+  dbToMeterRatio, linearPeakToDb, readLiveMasterMeter, getMasterCompPreset,
   buildFilteredVoiceSamples, getVoiceFilterPreset, getCurrentPreviewPositionSec, getStudioVoicePeaks,
   cancelDemoCountIn, isDemoCountIn, isDemoRecording, isDemoRecordingOrCountIn,
   renderFinalMixBuffer, renderFinalMixWav, startDemoPreviewPlayback, stopDemoPreviewPlayback,
   startDemoRecording, stopDemoRecording, updateLivePreviewMix
 } from '../js/demo-recorder.js';
+import { measureAcousticLagFromCountIn } from '../js/voice-filter.js';
 import { encodeShortVideo, VIDEO_STYLES } from '../js/short-video.js';
 import { startHumanizedVoiceGroup } from '../js/synth-presets.js';
 import { initKeyboardUI } from '../js/ui-keyboard.js';
@@ -231,12 +232,58 @@ test('hay 16 progresiones únicas con grados del 0 al 6 y selección circular', 
   assert.equal(getState().progressionIndex, 15);
 });
 
+test('la claqueta detecta 118 ms sobre ruido suave y descarta el silencio y un ataque aislado', () => {
+  const rate = 48000;
+  const offsets = [0, 31703, 63405, 95108];
+  const lagSamples = Math.round(0.118 * rate);
+  const length = offsets.at(-1) + Math.round(0.35 * rate);
+  let seed = 314159;
+  const room = Float32Array.from({ length }, (_, i) => {
+    seed = (Math.imul(1664525, seed) + 1013904223) >>> 0;
+    return 0.00035 * (2 * seed / 0x100000000 - 1) + 0.002 * Math.sin(2 * Math.PI * 50 * i / rate);
+  });
+  const addClick = (offset, gain) => {
+    room[offset + lagSamples] += gain;
+    room[offset + lagSamples + 3] -= gain * 0.5;
+  };
+  const silent = measureAcousticLagFromCountIn(new Float32Array(length), offsets, rate);
+  assert.deepEqual(silent, { detected: false, lagMs: null, offsetMs: null, bleedDetected: false, confidence: 0 });
+  assert.equal(measureAcousticLagFromCountIn(room, offsets, rate).detected, false);
+  addClick(offsets[0], 0.34);
+  assert.equal(measureAcousticLagFromCountIn(room, offsets, rate).detected, false);
+  for (const offset of offsets.slice(1)) addClick(offset, 0.18);
+  const calibration = measureAcousticLagFromCountIn(room, offsets, rate);
+  assert.equal(calibration.detected, true);
+  assert.equal(calibration.bleedDetected, true);
+  assert.ok(calibration.confidence >= 3.2);
+  assert.ok(Math.abs(calibration.lagMs - 118) <= 2);
+  assert.ok(calibration.offsetMs >= -120 && calibration.offsetMs <= -116);
+  assert.equal(calibration.offsetMs, -calibration.lagMs);
+
+  const shapedClicks = new Float32Array(length);
+  for (const [beat, offset] of offsets.entries()) {
+    let phase = 0;
+    for (let i = 0; i < 0.048 * rate; i++) {
+      const time = i / rate;
+      const peak = beat === 0 ? 0.45 : 0.26;
+      const gain = time < 0.002
+        ? peak * time / 0.002
+        : peak * (0.0001 / peak) ** ((time - 0.002) / 0.04);
+      shapedClicks[offset + lagSamples + i] = gain * (1 - 4 * Math.abs(phase % 1 - 0.5));
+      phase += (beat === 0 ? 1320 : 880) * 0.55 ** (Math.min(time, 0.035) / 0.035) / rate;
+    }
+  }
+  const shaped = measureAcousticLagFromCountIn(shapedClicks, offsets, rate);
+  assert.equal(shaped.detected, true);
+  assert.ok(Math.abs(shaped.lagMs - 118) <= 1);
+});
+
 test('el filtro de voz tiene cuatro presets independientes de la captura', () => {
   const expected = [
-    { bleedCancel: 0, gateStrength: 0, gateFloor: 1, highpassHz: 40, deMudDb: 0, presenceDb: 0, lowpassHz: 20000 },
-    { bleedCancel: 0.40, gateStrength: 0.35, gateFloor: 0.32, highpassHz: 105, deMudDb: -3, presenceDb: 2, lowpassHz: 14000 },
-    { bleedCancel: 0.72, gateStrength: 0.65, gateFloor: 0.08, highpassHz: 155, deMudDb: -5, presenceDb: 3.5, lowpassHz: 10500 },
-    { bleedCancel: 1, gateStrength: 0.95, gateFloor: 0.01, highpassHz: 205, deMudDb: -6.5, presenceDb: 5, lowpassHz: 8200 }
+    { bleedStrength: 0, noiseStrength: 0, minGain: 1, roomDecay: 0, highpassHz: 40, deMudDb: 0, presenceDb: 0, lowpassHz: 20000 },
+    { bleedStrength: 0.75, noiseStrength: 0.55, minGain: 0.28, roomDecay: 0.45, highpassHz: 95, deMudDb: -2, presenceDb: 1.5, lowpassHz: 15000 },
+    { bleedStrength: 1.35, noiseStrength: 0.90, minGain: 0.11, roomDecay: 0.55, highpassHz: 135, deMudDb: -3.5, presenceDb: 2.8, lowpassHz: 12000 },
+    { bleedStrength: 2.15, noiseStrength: 1.25, minGain: 0.035, roomDecay: 0.65, highpassHz: 175, deMudDb: -5, presenceDb: 4, lowpassHz: 9500 }
   ];
   for (const [level, preset] of expected.entries()) assert.deepEqual(getVoiceFilterPreset(level), preset);
   getVoiceFilterPreset(0).highpassHz = 80;
@@ -244,72 +291,44 @@ test('el filtro de voz tiene cuatro presets independientes de la captura', () =>
   assert.deepEqual(getVoiceFilterPreset(4), expected[0]);
 });
 
-test('la puerta conserva los bits del nivel 0 y atenúa el sangrado alineado entre frases', () => {
+test('la STFT conserva los bits del nivel 0 y separa el sangrado de la voz simultánea', () => {
   const bits = new Uint32Array([0x3e800000, 0x80000000, 0x7fc12345, 0x00000001]);
-  const raw = new Float32Array(bits.buffer);
-  const bypass = buildFilteredVoiceSamples(raw, new Float32Array(raw.length), 48000, 0);
-  assert.notEqual(raw.buffer, bypass.buffer);
+  const bypass = buildFilteredVoiceSamples(new Float32Array(bits.buffer), null, 48000, 0);
+  assert.notEqual(bypass.buffer, bits.buffer);
   assert.deepEqual(new Uint32Array(bypass.buffer), bits);
 
-  const rate = 8000;
-  const delay = rate * 0.25;
-  const music = Float32Array.from({ length: rate * 2 }, (_, i) =>
-    i < rate * 0.35 ? 0.35 * Math.sin(i * 2 * Math.PI * 210 / rate) : 0);
-  const voice = Float32Array.from(music, (_, i) => (music[i - delay] ?? 0) * 0.16
-    + 0.004 * Math.sin(i * 2 * Math.PI * 310 / rate)
-    + (i >= rate * 0.9 && i < rate * 1.3 ? 0.26 * Math.sin(i * 2 * Math.PI * 220 / rate) : 0));
-  const original = voice.slice();
-  const filtered = buildFilteredVoiceSamples(voice, music, rate, 3, -250);
-  const unaligned = buildFilteredVoiceSamples(voice, music, rate, 3);
-  const peak = (samples, start, end) => Math.max(...samples.subarray(rate * start, rate * end).map(Math.abs));
-  assert.deepEqual(voice, original);
-  assert.ok(peak(filtered, 0.45, 0.57) < peak(original, 0.45, 0.57) * 0.2);
-  assert.ok(peak(filtered, 0.45, 0.57) < peak(unaligned, 0.45, 0.57) * 0.4);
-  assert.ok(peak(filtered, 0.97, 1.28) > peak(original, 0.97, 1.28) * 0.98);
-  assert.ok(peak(filtered, 1.8, 2) < peak(original, 1.8, 2) * 0.1);
+  for (const rate of [48000, 16000]) {
+    const tone = (i, hz) => Math.sin(2 * Math.PI * hz * i / rate);
+    const delaySamples = Math.round(0.118 * rate);
+    const music = Float32Array.from({ length: rate * 4 }, (_, i) => 0.4 * Math.SQRT2 * tone(i, 440));
+    const raw = music.map((_, i) => 0.3 * (music[i - delaySamples] ?? 0)
+      + (i >= rate ? 0.15 * Math.SQRT2 * tone(i, 1100) : 0));
+    const before = raw.slice();
+    const filtered = buildFilteredVoiceSamples(raw, music, rate, 3, -118);
+    assert.equal(filtered.length, raw.length);
+    assert.deepEqual(raw, before);
+    assert.deepEqual(new Uint32Array(buildFilteredVoiceSamples(raw, music, rate, 0).buffer), new Uint32Array(raw.buffer));
+
+    // Proyección en cuadratura para medir cada banda sin confundir energía con fase.
+    const bandRms = (samples, hz, startSec, endSec) => {
+      let sine = 0;
+      let cosine = 0;
+      for (let i = rate * startSec; i < rate * endSec; i++) {
+        sine += samples[i] * tone(i, hz);
+        cosine += samples[i] * Math.cos(2 * Math.PI * hz * i / rate);
+      }
+      return Math.SQRT2 * Math.hypot(sine, cosine) / (rate * (endSec - startSec));
+    };
+    const gain = (hz, start, end) => bandRms(filtered, hz, start, end) / bandRms(raw, hz, start, end);
+    assert.ok(Math.abs(bandRms(raw, 440, 1.5, 3.5) - 0.12) < 1e-6);
+    assert.ok(Math.abs(bandRms(raw, 1100, 1.5, 3.5) - 0.15) < 1e-6);
+    assert.ok(20 * Math.log10(gain(440, 1.5, 3.5)) <= -12, `sangrado durante la voz a ${rate} Hz`);
+    assert.ok(gain(1100, 1.5, 3.5) ** 2 >= 0.70, `energía vocal a ${rate} Hz`);
+    assert.ok(20 * Math.log10(gain(440, 0.35, 0.7)) <= -14, `sangrado sin voz a ${rate} Hz`);
+  }
 });
 
-test('el filtro atenúa al menos 12 dB de sangrado fuerte y de ruido, y conserva la voz sobre la música', () => {
-  const rate = 48000;
-  const tone = (i, hz) => Math.sin(i * 2 * Math.PI * hz / rate);
-  const window = (samples, start, end) => samples.subarray(start * rate, end * rate);
-  const rms = samples => Math.sqrt(samples.reduce((power, s) => power + s * s, 0) / samples.length);
-  const db = (output, input) => 20 * Math.log10(rms(output) / rms(input));
-  let seed = 314159;
-  const noise = () => ((seed = (Math.imul(1664525, seed) + 1013904223) >>> 0) / 0x100000000) * 2 - 1;
-  const music = Float32Array.from({ length: rate * 4 }, (_, i) => i < rate * 2.5
-    ? 0.22 * noise() + 0.10 * tone(i, 310) + 0.08 * tone(i, 712)
-    : 0);
-  // Camino directo entre taps de la rejilla, más una reflexión secundaria.
-  const latency = Math.round(0.075 * rate);
-  const bleed = music.map((_, i) => (music[i - latency - 239] ?? 0)
-    + 0.28 * (music[i - latency - Math.round(0.009 * rate)] ?? 0));
-  const bleedGain = 0.12 / rms(window(bleed, 0.4, 1));
-  const vocal = music.map((_, i) => i >= rate * 1.25 && i < rate * 2.15
-    ? 0.32 * tone(i, 231) + 0.13 * tone(i, 462)
-    : 0);
-  const raw = bleed.map((s, i) => s * bleedGain + vocal[i] + 0.012 * noise());
-  const mild = buildFilteredVoiceSamples(raw, music, rate, 1, -75);
-  const medium = buildFilteredVoiceSamples(raw, music, rate, 2, -75);
-  const filtered = buildFilteredVoiceSamples(raw, music, rate, 3, -75);
-  const instrumental = samples => window(samples, 0.4, 1);
-  const room = samples => window(samples, 3.2, 4);
-  const sung = samples => window(samples, 1.5, 2);
-
-  assert.ok(db(instrumental(filtered), instrumental(raw)) <= -12, 'sangrado en la pausa instrumental');
-  assert.ok(db(room(filtered), room(raw)) <= -12, 'ruido de sala sin pista');
-  assert.ok(rms(instrumental(mild)) < rms(instrumental(raw)));
-  assert.ok(rms(instrumental(medium)) < rms(instrumental(mild)));
-  assert.ok(rms(instrumental(filtered)) < rms(instrumental(medium)));
-  const sungVocal = sung(vocal);
-  const vocalPower = sungVocal.reduce((power, s) => power + s * s, 0);
-  const projection = sung(filtered).reduce((power, s, i) => power + s * sungVocal[i], 0) / vocalPower;
-  assert.ok(projection > 0.97 && projection < 1.03, `ganancia vocal: ${projection}`);
-  const residual = samples => sung(samples).map((s, i) => s - sungVocal[i]);
-  assert.ok(db(residual(filtered), residual(raw)) <= -10, 'cancelación mientras la puerta está abierta');
-});
-
-test('el AudioWorklet transfiere tres canales cada 4096 muestras y vacía hasta el fotograma de Stop', async () => {
+test('el AudioWorklet separa el micro de la precuenta y vacía la toma hasta el fotograma de Stop', async () => {
   const recorder = await readFile(new URL('../js/demo-recorder.js', import.meta.url), 'utf8');
   const code = recorder.match(/const MULTITRACK_WORKLET_CODE = `([\s\S]*?)`;/)[1];
   const messages = [];
@@ -331,16 +350,22 @@ test('el AudioWorklet transfiere tres canales cada 4096 muestras y vacía hasta 
   };
   runInNewContext(code, scope);
   const quantum = Array.from({ length: 3 }, (_, channel) => new Float32Array(128).fill(channel + 1));
-  processor.port.onmessage({ data: { type: 'start', frame: 132 } });
+  processor.port.onmessage({ data: { type: 'start', frame: 132, countIn: { startFrame: 5, endFrame: 132 } } });
   for (let i = 0; i < 33; i++) {
     scope.currentFrame = i * 128;
     assert.equal(processor.process([quantum]), true);
   }
-  assert.equal(messages.length, 0);
+  const [calibration] = messages;
+  assert.equal(messages.length, 1);
+  assert.deepEqual(Object.keys(calibration), ['type', 'frame', 'samples']);
+  assert.equal(calibration.type, 'count-in-voice');
+  assert.equal(calibration.frame, 5);
+  assert.equal(calibration.samples.length, 127);
+  assert.ok(calibration.samples.every(sample => sample === 3));
   scope.currentFrame += 128;
   processor.process([quantum]);
-  assert.equal(messages.length, 1);
-  const full = messages[0];
+  assert.equal(messages.length, 2);
+  const full = messages[1];
   assert.equal(full.frame, 132);
   assert.equal(full.length, 4096);
   assert.equal(full.mL.buffer.byteLength, 3 * 4096 * Float32Array.BYTES_PER_ELEMENT);
@@ -350,10 +375,10 @@ test('el AudioWorklet transfiere tres canales cada 4096 muestras y vacía hasta 
   }
   const endFrame = scope.currentFrame + 140;
   processor.port.onmessage({ data: { type: 'flush', frame: endFrame } });
-  assert.equal(messages.length, 1);
+  assert.equal(messages.length, 2);
   scope.currentFrame += 128;
   assert.equal(processor.process([quantum]), false);
-  const [, partial, ack] = messages;
+  const [, , partial, ack] = messages;
   assert.equal(partial.frame, full.frame + full.length);
   assert.equal(partial.length, endFrame - partial.frame);
   assert.ok(partial.vM.subarray(0, partial.length).every(sample => sample === 3));
@@ -550,9 +575,19 @@ class TestAudioBuffer {
   copyToChannel(samples, channel) { this.channels[channel].set(samples); }
 }
 
+test('COMP ofrece bypass lineal, dos compresiones y un limitador con soft-clip', () => {
+  const expected = [
+    null,
+    { threshold: -4, knee: 18, ratio: 3, attack: 0.008, release: 0.18, softClip: false },
+    { threshold: -2, knee: 10, ratio: 8, attack: 0.004, release: 0.14, softClip: false },
+    { threshold: -1, knee: 4, ratio: 16, attack: 0.002, release: 0.10, softClip: true }
+  ];
+  for (const [level, preset] of expected.entries()) assert.deepEqual(getMasterCompPreset(level), preset);
+  getMasterCompPreset(3).ratio = 1;
+  assert.deepEqual(getMasterCompPreset(3), expected[3]);
+});
+
 test('la escala Master reserva seis segmentos por encima de la raya de 0 dB', () => {
-  assert.deepEqual(MASTER_MODES, ['clean', 'comp', 'clip']);
-  assert.ok(Object.isFrozen(MASTER_MODES));
   assert.equal(linearPeakToDb(1), 0);
   assert.equal(dbToMeterRatio(linearPeakToDb(1)), 36 / 42);
   assert.equal(linearPeakToDb(2).toFixed(2), '6.02');
@@ -920,9 +955,11 @@ test('la progresión mantiene sus tríadas en octava 0 al cambiar a Melodía en 
       replaceGlobal(studio, 'cancelAnimationFrame', () => {});
       audio.audioWorklet = { async addModule() {} };
       let worklet;
+      let startCommand;
       replaceGlobal(studio, 'AudioWorkletNode', class extends TestAudioNode {
         port = {
           postMessage: command => {
+            if (command.type === 'start') startCommand = command;
             if (command.type === 'flush') queueMicrotask(() => {
               assert.ok(this.port.onmessage, 'el puerto sigue conectado mientras entrega la cola');
               const tail = new Float32Array(24).fill(1);
@@ -943,6 +980,13 @@ test('la progresión mantiene sus tríadas en octava 0 al cambiar a Melodía en 
       const micFilter = audio.nodes.filter(node => node.kind === 'mic').at(-1).connections[0];
       assert.equal(micFilter.type, 'highpass');
       assert.equal(micFilter.frequency.value, 40);
+      const { startFrame: countStart, endFrame: countEnd } = startCommand.countIn;
+      assert.ok(countEnd <= startCommand.frame);
+      const countInVoice = new Float32Array(countEnd - countStart);
+      for (const click of oscillators().slice(before)) {
+        countInVoice[Math.ceil(click.startTime * audio.sampleRate) - countStart + 118] = 0.25;
+      }
+      worklet.port.onmessage({ data: { type: 'count-in-voice', frame: countStart, samples: countInVoice } });
       advanceAudioTo(startAt + 0.005);
       assert.equal(isDemoRecording(), true);
       assert.equal(getDebugTelemetry().running, false);
@@ -963,6 +1007,9 @@ test('la progresión mantiene sus tríadas en octava 0 al cambiar a Melodía en 
       advanceAudioTo(startAt + 2);
       const session = await stopDemoRecording();
       assert.ok(micStopped);
+      assert.ok(session.countInCalibration.detected);
+      assert.equal(session.autoMeasuredOffsetMs, session.countInCalibration.offsetMs);
+      assert.ok(Math.abs(session.autoMeasuredOffsetMs + 118) <= 1);
       assert.equal(session.hasBackingTrack, false);
       assert.equal(session.backingBuffer, null);
       assert.equal(worklet.port.onmessage, null);
@@ -983,13 +1030,13 @@ test('la progresión mantiene sus tríadas en octava 0 al cambiar a Melodía en 
       assert.equal(voice.offset, 0.725);
       assert.equal(voice.startTime, music.startTime);
       assert.notEqual(voice.buffer, session.voiceBuffer);
-      const highpasses = audio.nodes.filter(node => node.type === 'highpass' && node.frequency.value === 205);
+      const highpasses = audio.nodes.filter(node => node.type === 'highpass' && node.frequency.value === 175);
       assert.equal(highpasses.length, 2);
       assert.equal(highpasses[0].connections[0], highpasses[1]);
       assert.equal(highpasses[1].connections[0].frequency.value, 250);
       assert.equal(highpasses[1].connections[0].connections[0].frequency.value, 3300);
       updateLivePreviewMix({ ...settings, voiceFilter: 2 });
-      assert.ok(highpasses.every(node => node.frequency.targets.at(-1).value === 155));
+      assert.ok(highpasses.every(node => node.frequency.targets.at(-1).value === 135));
       audio.currentTime = music.startTime + 0.25;
       assert.equal(getCurrentPreviewPositionSec(), 0.85);
 
@@ -1063,6 +1110,69 @@ test('la progresión mantiene sus tríadas en octava 0 al cambiar a Melodía en 
       assert.equal(video.filename, `orbita-maqueta-T${session.videoMetadata.bpm}-9x16.webm`);
       const videoWithoutMetadata = await encodeShortVideo(mix, null, () => {}, signal);
       assert.equal(videoWithoutMetadata.filename, 'orbita-maqueta-T126-9x16.webm');
+    });
+
+    await context.test('la captura de respaldo separa la precuenta y la toma dentro de un bloque', async studio => {
+      const advanceAudioTo = mockAudioTimeouts(studio, audio);
+      const track = { getSettings: () => ({}), stop() {} };
+      replaceGlobal(studio, 'navigator', { mediaDevices: {
+        async getUserMedia() { return { getAudioTracks: () => [track], getTracks: () => [track] }; }
+      } });
+      const audioWorklet = audio.audioWorklet;
+      audio.audioWorklet = null;
+      let processor;
+      audio.createScriptProcessor = (size, inputs) => {
+        assert.equal(size, 1024);
+        assert.equal(inputs, 4);
+        processor = audio.addNode('scriptProcessor');
+        return processor;
+      };
+      audio.createConstantSource = () => Object.assign(audio.addNode('constantSource', ['offset']), { start() {} });
+      studio.after(() => {
+        audio.audioWorklet = audioWorklet;
+        delete audio.createScriptProcessor;
+        delete audio.createConstantSource;
+      });
+
+      setState({ bpm: 220, metronomeEnabled: false, cameraEnabled: false });
+      const before = oscillators().length;
+      const rate = audio.sampleRate;
+      const firstClick = audio.currentTime + 0.04;
+      const recordTime = firstClick + 4 * (60 / 220);
+      const start = Math.ceil(firstClick * rate);
+      const recordFrame = Math.ceil(recordTime * rate);
+      await startDemoRecording();
+
+      const buffer = new TestAudioBuffer(4, 1024, rate);
+      const [musicL, musicR, voice, timing] = buffer.channels;
+      const firstFrame = start - 19;
+      const mark = frame => 1 + (frame - start) / (recordFrame - start);
+      // El marcador conserva la posición aunque falten las primeras muestras del bloque.
+      for (let i = start - firstFrame + 3; i < timing.length; i++) timing[i] = mark(firstFrame + i);
+      for (const click of oscillators().slice(before)) {
+        const index = Math.ceil(click.startTime * rate) - firstFrame + 118;
+        if (index < voice.length) voice[index] = 0.5;
+      }
+      const lastClickIndex = Math.ceil(oscillators().at(-1).startTime * rate) - firstFrame + 118;
+      processor.onaudioprocess({ inputBuffer: buffer });
+
+      const boundary = recordFrame - firstFrame - buffer.length;
+      for (let i = 0; i < boundary; i++) timing[i] = mark(firstFrame + buffer.length + i);
+      timing.fill(3, boundary);
+      voice.fill(0);
+      if (lastClickIndex >= buffer.length) voice[lastClickIndex - buffer.length] = 0.5;
+      voice.fill(0.02, boundary);
+      musicL.fill(0.075, boundary);
+      musicR.fill(0.125, boundary);
+      processor.onaudioprocess({ inputBuffer: buffer });
+      advanceAudioTo(recordTime + 1);
+      const session = await stopDemoRecording();
+      assert.equal(session.musicBuffer.length, buffer.length - boundary);
+      assert.ok(Math.abs(session.autoMeasuredOffsetMs + 118) <= 1);
+      assert.ok(session.countInCalibration.bleedDetected);
+      assert.ok(session.musicBuffer.getChannelData(0).every(sample => sample === Math.fround(0.075)));
+      assert.ok(session.musicBuffer.getChannelData(1).every(sample => sample === 0.125));
+      assert.ok(session.voiceBuffer.getChannelData(0).every(sample => sample === Math.fround(0.02)));
     });
 
     await context.test('la pista seca reproduce desde cero y se rearma en el tiempo 1 de la maqueta', async studio => {
@@ -1196,19 +1306,27 @@ test('la progresión mantiene sus tríadas en octava 0 al cambiar a Melodía en 
       assert.equal(bus.gain.value, 2);
       const musicGain = audio.nodes.findLast(node => node.buffer === session.musicBuffer).connections[0];
       assert.deepEqual(musicGain.connections, [bus]);
-      const [left, splitter, clean, compressor, clipInput] = bus.connections;
+      const [left, splitter, clean, gentle, firm, limiter] = bus.connections;
       const [right] = splitter.connections;
-      const [comp] = compressor.connections;
+      const [gentleGain] = gentle.connections;
+      const [firmGain] = firm.connections;
+      const [clipInput] = limiter.connections;
       const [shaper] = clipInput.connections;
       const [clip] = shaper.connections;
-      assert.deepEqual([clean, comp, clip].map(node => node.gain.value), [0, 1, 0]);
-      assert.ok([comp, clip].every(node => node.connections[0] === clean.connections[0]));
-      assert.deepEqual(['threshold', 'knee', 'ratio', 'attack', 'release'].map(key => compressor[key].value),
-        [-3, 12, 6, 0.004, 0.14]);
+      const masterPaths = [clean, gentleGain, firmGain, clip];
+      assert.deepEqual(masterPaths.map(node => node.gain.value), [0, 1, 0, 0]);
+      assert.ok(masterPaths.every(node => node.connections[0] === clean.connections[0]));
+      for (const [index, compressor] of [gentle, firm, limiter].entries()) {
+        assert.equal(compressor.kind, 'compressor');
+        const { softClip: _softClip, ...params } = getMasterCompPreset(index + 1);
+        assert.deepEqual(Object.fromEntries(Object.keys(params).map(key => [key, compressor[key].value])), params);
+      }
       assert.equal(shaper.oversample, '2x');
       const clipAt = sample => shaper.curve[(1 + sample * clipInput.gain.value) * (shaper.curve.length - 1) / 2];
       assert.equal(clipAt(0.5), 0.5);
-      assert.ok(clipAt(1) < 1 && clipAt(2) > clipAt(1) && clipAt(2) <= 1);
+      const masterInput = 2;
+      assert.ok(clipAt(1) < 1 && clipAt(masterInput) > clipAt(1));
+      assert.ok(clipAt(masterInput) <= 1 && clipAt(masterInput) < masterInput);
       assert.equal(clipAt(-2), -clipAt(2));
       assert.equal(left.fftSize, 1024);
       assert.equal(right.fftSize, 1024);
@@ -1225,13 +1343,15 @@ test('la progresión mantiene sus tríadas en octava 0 al cambiar a Melodía en 
       assert.equal(progressSample.meterData.clipped, true);
       assert.deepEqual(readLiveMasterMeter(), progressSample.meterData);
 
-      for (const [mode, masterVol] of [['clean', 0], ['clip', 1.5], ['comp', 3]]) {
-        updateLivePreviewMix({ ...settings, backingVol: 0, masterVol, masterMode: mode });
+      for (const [masterComp, masterVol] of [[0, 0], [1, 1], [2, 3], [3, 1.5], [0, 1.5]]) {
+        updateLivePreviewMix({ ...settings, backingVol: 0, masterVol, masterComp });
         assert.deepEqual(bus.gain.targets.at(-1), {
           value: Math.min(2, masterVol), time: audio.currentTime, timeConstant: 0.015
         });
-        assert.deepEqual([clean, comp, clip].map(node => node.gain.targets.at(-1)),
-          MASTER_MODES.map(name => ({ value: Number(mode === name), time: audio.currentTime, timeConstant: 0.015 })));
+        assert.deepEqual(masterPaths.map(node => node.gain.targets.at(-1)),
+          masterPaths.map((_, i) => ({ value: Number(masterComp === i), time: audio.currentTime, timeConstant: 0.015 })));
+        assert.equal(trackSources(buffer).at(-1), previewBacking);
+        assert.equal(previewBacking.stopTimes.length, 0);
       }
       assert.equal(backingGain.gain.targets.at(-1).value, 0);
       assert.ok(startDemoPreviewPlayback(settings, null, null, 0.75));
@@ -1248,7 +1368,7 @@ test('la progresión mantiene sus tríadas en octava 0 al cambiar a Melodía en 
         }
       };
       try {
-        await renderFinalMixBuffer({ ...settings, masterVol: 1.5, masterMode: 'clip' });
+        await renderFinalMixBuffer({ ...settings, masterVol: 1.5, masterComp: 3 });
         const exportBacking = offline.nodes.find(node => node.buffer === buffer);
         assert.equal(exportBacking.offset, 0.25 + session.backingStartSec);
         assert.equal(exportBacking.duration, 1.25);
@@ -1256,12 +1376,22 @@ test('la progresión mantiene sus tríadas en octava 0 al cambiar a Melodía en 
         const [exportBus] = exportBacking.connections[0].connections;
         assert.equal(exportBus.gain.value, 1.5);
         assert.ok(!offline.nodes.some(node => node.kind === 'analyser'));
-        const [exportClean, exportCompressor, exportClipInput] = exportBus.connections;
-        const [exportComp] = exportCompressor.connections;
+        assert.equal(exportBus.connections.length, 1);
+        const [exportLimiter] = exportBus.connections;
+        const [exportClipInput] = exportLimiter.connections;
         const [exportShaper] = exportClipInput.connections;
         const [exportClip] = exportShaper.connections;
-        assert.deepEqual([exportClean, exportComp, exportClip].map(node => node.gain.value), [0, 0, 1]);
+        assert.equal(exportLimiter.ratio.value, limiter.ratio.value);
+        assert.equal(exportClip.gain.value, 1);
+        assert.equal(exportShaper.oversample, '2x');
         assert.deepEqual(exportShaper.curve, shaper.curve);
+
+        await renderFinalMixBuffer({ ...settings, masterVol: 1.5, masterComp: 0 });
+        const [exportLinearBus] = offline.nodes.find(node => node.buffer === buffer).connections[0].connections;
+        const [exportLinear] = exportLinearBus.connections;
+        assert.equal(exportLinear.kind, 'gain');
+        assert.equal(exportLinear.gain.value, 1);
+        assert.ok(!offline.nodes.some(node => ['compressor', 'waveshaper'].includes(node.kind)));
       } finally {
         window.OfflineAudioContext = OfflineCtx;
       }
